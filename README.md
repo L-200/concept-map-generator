@@ -42,13 +42,25 @@ npm run preview
 
 ## 2. Como Fornecer a Entrada de Dados
 
-A aplicação suporta **4 formas** de entrada de dados:
+A aplicação suporta **5 formas** de entrada e criação de mapas:
 
-### 2.1. Leitura Automática de `entrada.md` (Padrão)
+### 2.1. Arrastar e Soltar Arquivo `.md` na Janela do Navegador (Drag-and-Drop)
+Você pode arrastar qualquer arquivo Markdown (`.md`) ou projeto salvo (`.cmap.json`) diretamente do seu gerenciador de arquivos para **qualquer lugar da tela do navegador**. Uma sobreposição visual (*dropzone*) será exibida e, ao soltar o arquivo, o novo mapa conceitual será gerado e organizado automaticamente.
+
+### 2.2. Criar um Mapa Conceitual do Zero (`Novo Mapa ▾`)
+Para construir o seu próprio mapa conceitual manualmente sem precisar escrever Markdown previamente:
+1. Clique em **`Novo Mapa ▾`** no canto superior esquerdo e escolha entre **Novo Mapa (com Bloco Inicial)** ou **Canvas Totalmente em Branco**.
+2. Adicione conceitos e ligações livremente usando qualquer um dos métodos rápidos:
+   - **Botão `+ Ramificar` sobre o bloco selecionado:** Clique em um bloco para exibir sua barra flutuante e clique em **`+ Ramificar`** para criar um novo bloco filho já conectado automaticamente.
+   - **Arrastar da borda para o vazio:** Puxe uma conexão a partir de qualquer uma das 4 bolinhas azuis na borda de um bloco e solte o mouse em uma área vazia do fundo — um novo bloco conectado será criado naquele ponto.
+   - **Botão `+ Ligação` (na barra superior ou na `Tabela`):** Digite `Bloco A (Origem)`, `Frase de Ligação`, `Bloco B (Destino)` e escolha `Hierárquica` ou `Ligação Cruzada`. Caso os blocos ainda não existam, eles são criados e conectados automaticamente.
+   - **Duplo clique no fundo ou botão `+ Bloco`:** Cria um bloco avulso em qualquer posição.
+
+### 2.3. Leitura Automática de `entrada.md` (Padrão)
 Ao iniciar com `npm run dev`, um plugin integrado ao servidor Vite ([`vite.config.ts`](vite.config.ts)) lê automaticamente o arquivo [`entrada.md`](entrada.md) na raiz do projeto por meio do endpoint local `/api/default-input`.
 - Caso você edite o arquivo `entrada.md` no disco e queira recarregá-lo do zero na interface, basta clicar no botão de **Recarregar (`↻`)** ao lado do botão *Importar* na barra superior.
 
-### 2.2. Formato Esperado da Tabela Markdown
+### 2.4. Formato Esperado da Tabela Markdown
 O parser ([`markdownParser.ts`](src/services/parser/markdownParser.ts)) aceita tabelas Markdown tanto no formato de **5 colunas** (com coluna de índice `#`) quanto no formato de **4 colunas** (sem `#`):
 
 **Formato de 5 colunas (padrão `entrada.md`):**
@@ -74,15 +86,9 @@ O parser ([`markdownParser.ts`](src/services/parser/markdownParser.ts)) aceita t
 - **Tipos de relação:** Reconhece `hierárquica` (e variações sem acento) e `ligação cruzada` (ou `cruzada`, `transversal`, `cross-link`). Caso omitido, assume `hierárquica` como padrão e registra um aviso diagnóstico sem interromper o carregamento.
 - **Tolerância a falhas:** Textos fora da tabela são ignorados com segurança e linhas incompletas são reportadas na aba de diagnósticos sem travar a aplicação.
 
-### 2.3. Importação de Arquivos pela Interface (`Importar`)
-Clique no botão **Importar** na barra superior para carregar qualquer arquivo do seu computador:
-- **Arquivos Markdown (`.md`, `.markdown`, `.txt`):** Gera um novo mapa conceitual a partir da tabela contida no arquivo.
-- **Arquivos de Projeto (`.cmap.json`, `.json`):** Reabre um mapa salvo anteriormente, restaurando 100% dos conceitos, conexões, posições manuais dos nós, tamanhos, cores e pinos (`📌`).
-
-### 2.4. Edição Direta de Tabela ou Código Markdown na Interface (`Tabela`)
-Clique no botão **Tabela** na barra superior para abrir o modal sincronizado:
-- **Aba Tabela Interativa:** Permite editar frases de ligação, trocar o tipo (`hierárquica` / `ligação cruzada`) ou excluir proposições diretamente em formato tabular.
-- **Aba Código Markdown:** Exibe o código Markdown de 5 colunas atualizado em tempo real conforme você edita o mapa no canvas, permitindo também colar/editar uma tabela Markdown diretamente e clicar em **Aplicar Markdown ao Mapa**.
+### 2.5. Importação e Edição via `Importar` ou `Tabela`
+- **Botão `Importar`:** Abre o seletor de arquivos para carregar `.md` ou `.cmap.json`.
+- **Botão `Tabela`:** Permite adicionar novas proposições em formulário tabular, editar frases/tipos inline ou editar diretamente o código Markdown sincronizado.
 
 ---
 
@@ -90,10 +96,12 @@ Clique no botão **Tabela** na barra superior para abrir o modal sincronizado:
 
 ### Manipulação com o Mouse no Canvas
 - **Mover conceitos:** Clique e arraste qualquer nó. Ao mover um nó manualmente, ele é automaticamente marcado como **Fixado (`📌 Pinned`)**, garantindo que sua posição manual seja preservada caso você acione o botão **Organizar** posteriormente.
-- **Criar novo conceito:** Dê **duplo clique** em qualquer área vazia do canvas ou clique no botão **+ Conceito** na barra superior.
-- **Editar texto de um conceito ou frase de ligação:** Dê **duplo clique** diretamente sobre o nó ou sobre a pílula da frase de ligação (`Enter` confirma, `Esc` cancela).
+- **Criar novo bloco:** Dê **duplo clique** em qualquer área vazia do canvas ou clique no botão **`+ Bloco`** na barra superior.
+- **Ramificar / Criar bloco conectado:** Selecione um bloco e clique em **`+ Ramificar`** acima dele, ou arraste de uma de suas 4 portas azuis e solte em uma área vazia do canvas.
+- **Criar proposição completa (`+ Ligação`):** Use o botão **`+ Ligação`** na barra superior para conectar blocos existentes ou criar novos blocos já interligados.
+- **Editar texto de um conceito ou frase de ligação:** Dê **duplo clique** diretamente sobre o nó (ou clique em **Editar** na barra flutuante do nó) ou sobre a pílula da frase de ligação (`Enter` confirma, `Esc` cancela).
 - **Redimensionar nó:** Ao selecionar um conceito, arraste qualquer uma das alças azuis nas bordas/cantos da caixa.
-- **Criar nova conexão:** Passe o mouse sobre um conceito para revelar as 4 portas azuis (topo, direita, base, esquerda) e arraste até outro conceito.
+- **Criar conexão entre dois blocos existentes:** Passe o mouse sobre um conceito (ou selecione-o) para revelar as 4 portas azuis (topo, direita, base, esquerda) e arraste até outro conceito.
 - **Reconectar origem ou destino:** Clique em uma conexão e arraste a ponta da seta (ou a extremidade de origem) para outro conceito.
 - **Foco de vizinhança (Hover):** Ao passar o mouse sobre um conceito, o sistema destaca automaticamente suas conexões diretas de 1º grau e atenua o restante do mapa para facilitar a leitura em regiões densas.
 - **Seleção múltipla:** Segure `Shift` e arraste o mouse sobre o canvas (ou `Shift + Clique`) para selecionar vários elementos simultaneamente.

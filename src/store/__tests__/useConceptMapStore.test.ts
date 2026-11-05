@@ -120,4 +120,45 @@ describe('useConceptMapStore & Undo/Redo (Etapa 4)', () => {
     expect(reversed?.sourceId).toBe('concept-reserva-ducke');
     expect(reversed?.targetId).toBe(newId);
   });
+
+  it('permite iniciar um novo mapa do zero e construir blocos e ligações manualmente (createNewEmptyMap, addConnectedConcept e addPropositionByNames)', () => {
+    const store = useConceptMapStore.getState();
+
+    // 1. Inicia um mapa totalmente em branco
+    store.createNewEmptyMap(false);
+    expect(useConceptMapStore.getState().metrics.totalConcepts).toBe(0);
+    expect(useConceptMapStore.getState().metrics.totalRelations).toBe(0);
+    expect(useConceptMapStore.getState().sourceFileName).toBe('novo-mapa.md');
+
+    // 2. Inicia um novo mapa com bloco inicial ("Conceito Principal")
+    useConceptMapStore.getState().createNewEmptyMap(true);
+    const afterStarter = useConceptMapStore.getState();
+    expect(afterStarter.metrics.totalConcepts).toBe(1);
+    const rootId = afterStarter.semantic.conceptOrder[0];
+    expect(afterStarter.semantic.concepts[rootId]?.label).toBe('Conceito Principal');
+
+    // 3. Ramifica um novo bloco conectado a partir do bloco raiz
+    const branched = useConceptMapStore
+      .getState()
+      .addConnectedConcept(rootId, 'Subconceito A', 'divide-se em', 'hierarchical');
+    expect(branched).not.toBeNull();
+    expect(useConceptMapStore.getState().metrics.totalConcepts).toBe(2);
+    expect(useConceptMapStore.getState().metrics.totalRelations).toBe(1);
+
+    // 4. Adiciona uma proposição completa por nomes (reaproveitando "Conceito Principal" e criando "Subconceito B")
+    const relId2 = useConceptMapStore
+      .getState()
+      .addPropositionByNames(
+        'conceito principal', // testa deduplicação case-insensitive
+        'também abrange',
+        'Subconceito B',
+        'hierarchical'
+      );
+    expect(relId2).toBeTruthy();
+
+    const finalState = useConceptMapStore.getState();
+    expect(finalState.metrics.totalConcepts).toBe(3);
+    expect(finalState.metrics.totalRelations).toBe(2);
+  });
 });
+

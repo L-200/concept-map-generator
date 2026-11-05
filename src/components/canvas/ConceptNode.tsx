@@ -5,7 +5,7 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import { Pin } from 'lucide-react';
+import { GitBranchPlus, Pencil, Pin } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ConceptId, NodeVisualStyle } from '../../domain/types';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
@@ -26,6 +26,7 @@ export type ConceptFlowNode = Node<ConceptNodeData, 'concept'>;
 
 export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
   const updateConceptLabel = useConceptMapStore((s) => s.updateConceptLabel);
+  const addConnectedConcept = useConceptMapStore((s) => s.addConnectedConcept);
   const toggleNodePin = useConceptMapStore((s) => s.toggleNodePin);
   const resizeNode = useConceptMapStore((s) => s.resizeNode);
   const setHoveredNodeId = useConceptMapStore((s) => s.setHoveredNodeId);
@@ -56,12 +57,16 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
   };
 
   const handleStyle: React.CSSProperties = {
-    width: 10,
-    height: 10,
+    width: 11,
+    height: 11,
     borderRadius: '9999px',
     border: '2px solid #ffffff',
-    backgroundColor: '#3b82f6',
+    backgroundColor: '#2563eb',
   };
+
+  const handleVisibilityClass = `transition-all duration-150 hover:scale-125 ${
+    selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+  }`;
 
   const customBg = data.customStyle?.backgroundColor;
   const customBorder = data.customStyle?.borderColor;
@@ -107,6 +112,45 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
           });
         }}
       />
+
+      {/* Barra flutuante de criação rápida quando o nó está selecionado */}
+      {selected && !isEditing && (
+        <div
+          className="nodrag absolute -top-9 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-[11px] shadow-md"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              addConnectedConcept(
+                data.conceptId,
+                'Novo Conceito',
+                'relaciona-se com',
+                'hierarchical'
+              );
+            }}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-semibold text-blue-700 hover:bg-blue-50"
+            title="Criar um novo conceito já conectado a partir deste bloco"
+          >
+            <GitBranchPlus className="h-3 w-3" />
+            + Ramificar
+          </button>
+          <span className="h-3 w-px bg-slate-200" />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsEditing(true);
+            }}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            title="Editar texto deste conceito (ou dê duplo clique)"
+          >
+            <Pencil className="h-3 w-3" />
+            Editar
+          </button>
+        </div>
+      )}
 
       {/* Botão de Fixação (Pin) no canto superior direito */}
       <button
@@ -161,14 +205,14 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
         position={Position.Top}
         id="top"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
       <Handle
         type="source"
         position={Position.Top}
         id="top"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
 
       <Handle
@@ -176,14 +220,14 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
         position={Position.Right}
         id="right"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
       <Handle
         type="source"
         position={Position.Right}
         id="right"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
 
       <Handle
@@ -191,14 +235,14 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
         position={Position.Bottom}
         id="bottom"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
       <Handle
         type="source"
         position={Position.Bottom}
         id="bottom"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
 
       <Handle
@@ -206,15 +250,16 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
         position={Position.Left}
         id="left"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
       <Handle
         type="source"
         position={Position.Left}
         id="left"
         style={handleStyle}
-        className="opacity-0 group-hover:opacity-100 transition-opacity"
+        className={handleVisibilityClass}
       />
     </div>
   );
 }
+

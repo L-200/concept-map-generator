@@ -66,6 +66,7 @@ export interface ConceptMapState {
   searchQuery: string;
 
   // Ações de carregamento e persistência
+  createNewEmptyMap: (withStarterConcept?: boolean) => void;
   loadFromMarkdown: (markdownContent: string, fileName?: string) => Promise<void>;
   loadFromDocument: (doc: ConceptMapDocument) => void;
   exportDocument: () => ConceptMapDocument;
@@ -75,6 +76,19 @@ export interface ConceptMapState {
 
   // Ações de manipulação de Conceitos (Nós)
   addConcept: (label?: string, position?: Point2D) => ConceptId;
+  addConnectedConcept: (
+    sourceId: ConceptId,
+    newConceptLabel?: string,
+    linkingPhrase?: string,
+    type?: RelationType,
+    position?: Point2D
+  ) => { conceptId: ConceptId; relationId: RelationId } | null;
+  addPropositionByNames: (
+    sourceLabel: string,
+    linkingPhrase: string,
+    targetLabel: string,
+    type?: RelationType
+  ) => RelationId | null;
   updateConceptLabel: (conceptId: ConceptId, newLabel: string) => void;
   updateConceptStyleAndNotes: (
     conceptId: ConceptId,
@@ -217,6 +231,77 @@ export const useConceptMapStore = create<ConceptMapState>()(
       selectedEdgeIds: [],
       hoveredNodeId: null,
       searchQuery: '',
+
+      createNewEmptyMap: (withStarterConcept = false) => {
+        let nextSemantic: SemanticModel = {
+          ...EMPTY_SEMANTIC,
+          title: 'Novo Mapa Conceitual',
+        };
+        let nextVisual: VisualModel = {
+          ...EMPTY_VISUAL,
+          layoutSettings: { ...get().visual.layoutSettings },
+        };
+        let initialSelectedNodes: ConceptId[] = [];
+
+        if (withStarterConcept) {
+          const starterLabel = 'Conceito Principal';
+          const starterId = generateUniqueConceptId(starterLabel, {});
+          const starterDims = estimateConceptNodeDimensions(starterLabel);
+
+          nextSemantic = {
+            ...nextSemantic,
+            concepts: {
+              [starterId]: {
+                id: starterId,
+                label: starterLabel,
+                normalizedKey: normalizeConceptKey(starterLabel),
+                sourceMeta: { createdManually: true },
+              },
+            },
+            conceptOrder: [starterId],
+          };
+
+          nextVisual = {
+            ...nextVisual,
+            nodes: {
+              [starterId]: {
+                conceptId: starterId,
+                position: { x: 400, y: 120 },
+                dimensions: starterDims,
+                pinned: true,
+                customSize: false,
+                computedLayer: 0,
+              },
+            },
+          };
+          initialSelectedNodes = [starterId];
+        }
+
+        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
+        const savedAt = persistDraftSnapshot(
+          nextSemantic,
+          nextVisual,
+          'novo-mapa.md',
+          []
+        );
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          metrics: nextMetrics,
+          diagnostics: [],
+          sourceFileName: 'novo-mapa.md',
+          hasUnsavedChanges: false,
+          lastSavedAt: savedAt,
+          isLayoutRunning: false,
+          selectedNodeIds: initialSelectedNodes,
+          selectedEdgeIds: [],
+          hoveredNodeId: null,
+          searchQuery: '',
+        });
+
+        useConceptMapStore.temporal.getState().clear();
+      },
 
       loadFromMarkdown: async (markdownContent: string, fileName = 'entrada.md') => {
         set({ isLayoutRunning: true });
@@ -400,6 +485,285 @@ export const useConceptMapStore = create<ConceptMapState>()(
         });
 
         return id;
+      },
+
+      addConnectedConcept: (
+        sourceId: ConceptId,
+        newConceptLabel = 'Novo Conceito',
+        linkingPhrase = 'relaciona-se com',
+        type: RelationType = 'hierarchical',
+        position?: Point2D
+      ) => {
+        const state = get();
+        const sourceConcept = state.semantic.concepts[sourceId];
+        const sourceNodeVis = state.visual.nodes[sourceId];
+        if (!sourceConcept || !sourceNodeVis) return null;
+
+        const cleanLabel = cleanDisplayText(newConceptLabel) || 'Novo Conceito';
+        const cleanPhrase = cleanDisplayText(linkingPhrase) || 'relaciona-se com';
+        const newConceptId = generateUniqueConceptId(
+          cleanLabel,
+          state.semantic.concepts
+        );
+        const dimensions = estimateConceptNodeDimensions(cleanLabel);
+
+        // Conta quantos filhos já saem deste nó para distribuir lateralmente sem colisão
+        const outgoingCount = state.semantic.relationOrder.filter(
+          (rId) => state.semantic.relations[rId]?.sourceId === sourceId
+        ).length;
+
+        const isHorizontal = state.visual.layoutSettings.direction === 'LR';
+        const spreadOffset =
+          outgoingCount === 0
+            ? 0
+            : (outgoingCount % 2 === 1 ? 1 : -1) *
+              Math.ceil(outgoingCount / 2) *
+              (isHorizontal ? 100 : 210);
+
+        const targetPos: Point2D = position
+          ? { x: Math.round(position.x), y: Math.round(position.y) }
+          : isHorizontal
+            ? {
+                x: Math.round(sourceNodeVis.position.x + 260),
+                y: Math.round(sourceNodeVis.position.y + spreadOffset),
+              }
+            : {
+                x: Math.round(sourceNodeVis.position.x + spreadOffset),
+                y: Math.round(sourceNodeVis.position.y + 150),
+              };
+
+        const relationId = generateUniqueRelationId(state.semantic.relations);
+        const orderIndex = state.semantic.relationOrder.length + 1;
+
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          concepts: {
+            ...state.semantic.concepts,
+            [newConceptId]: {
+              id: newConceptId,
+              label: cleanLabel,
+              normalizedKey: normalizeConceptKey(cleanLabel),
+              sourceMeta: { createdManually: true },
+            },
+          },
+          conceptOrder: [...state.semantic.conceptOrder, newConceptId],
+          relations: {
+            ...state.semantic.relations,
+            [relationId]: {
+              id: relationId,
+              orderIndex,
+              sourceId,
+              linkingPhrase: cleanPhrase,
+              targetId: newConceptId,
+              type,
+              rawType: type === 'hierarchical' ? 'hierárquica' : 'ligação cruzada',
+              sourceMeta: { createdManually: true },
+            },
+          },
+          relationOrder: [...state.semantic.relationOrder, relationId],
+        };
+
+        const nextNodes = {
+          ...state.visual.nodes,
+          [newConceptId]: {
+            conceptId: newConceptId,
+            position: targetPos,
+            dimensions,
+            pinned: true,
+            customSize: false,
+            computedLayer: (sourceNodeVis.computedLayer ?? 0) + 1,
+          },
+        };
+
+        const smartHandles = computeSmartEdgeHandles(
+          nextSemantic,
+          nextNodes,
+          state.visual.layoutSettings.direction
+        );
+
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          nodes: nextNodes,
+          edges: {
+            ...state.visual.edges,
+            [relationId]: {
+              relationId,
+              curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+              sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
+              targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
+              labelOffset: { t: 0.5 },
+            },
+          },
+        };
+
+        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
+        const savedAt = persistDraftSnapshot(
+          nextSemantic,
+          nextVisual,
+          state.sourceFileName,
+          state.diagnostics
+        );
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          metrics: nextMetrics,
+          hasUnsavedChanges: true,
+          lastSavedAt: savedAt,
+          selectedNodeIds: [newConceptId],
+          selectedEdgeIds: [],
+        });
+
+        return { conceptId: newConceptId, relationId };
+      },
+
+      addPropositionByNames: (
+        sourceLabel: string,
+        linkingPhrase: string,
+        targetLabel: string,
+        type: RelationType = 'hierarchical'
+      ): RelationId | null => {
+        const state = get();
+        const cleanSource = cleanDisplayText(sourceLabel);
+        const cleanTarget = cleanDisplayText(targetLabel);
+        const cleanPhrase = cleanDisplayText(linkingPhrase) || 'relaciona-se com';
+
+        if (!cleanSource || !cleanTarget) return null;
+
+        const nextConcepts = { ...state.semantic.concepts };
+        const nextConceptOrder = [...state.semantic.conceptOrder];
+        const nextNodes = { ...state.visual.nodes };
+
+        const findConceptByNormalizedKey = (key: string): ConceptId | undefined =>
+          Object.values(nextConcepts).find((c) => c.normalizedKey === key)?.id;
+
+        const sourceKey = normalizeConceptKey(cleanSource);
+        let sourceId = findConceptByNormalizedKey(sourceKey);
+
+        if (!sourceId) {
+          sourceId = generateUniqueConceptId(cleanSource, nextConcepts);
+          const dims = estimateConceptNodeDimensions(cleanSource);
+          const idx = nextConceptOrder.length;
+          nextConcepts[sourceId] = {
+            id: sourceId,
+            label: cleanSource,
+            normalizedKey: sourceKey,
+            sourceMeta: { createdManually: true },
+          };
+          nextConceptOrder.push(sourceId);
+          nextNodes[sourceId] = {
+            conceptId: sourceId,
+            position: {
+              x: Math.round(320 + (idx % 4) * 220),
+              y: Math.round(120 + Math.floor(idx / 4) * 150),
+            },
+            dimensions: dims,
+            pinned: true,
+            customSize: false,
+            computedLayer: 0,
+          };
+        }
+
+        const targetKey = normalizeConceptKey(cleanTarget);
+        let targetId = findConceptByNormalizedKey(targetKey);
+
+        if (!targetId) {
+          targetId = generateUniqueConceptId(cleanTarget, nextConcepts);
+          const dims = estimateConceptNodeDimensions(cleanTarget);
+          const srcNode = nextNodes[sourceId];
+          const outgoingCount = state.semantic.relationOrder.filter(
+            (rId) => state.semantic.relations[rId]?.sourceId === sourceId
+          ).length;
+          const spreadX =
+            outgoingCount === 0
+              ? 0
+              : (outgoingCount % 2 === 1 ? 1 : -1) *
+                Math.ceil(outgoingCount / 2) *
+                210;
+
+          nextConcepts[targetId] = {
+            id: targetId,
+            label: cleanTarget,
+            normalizedKey: targetKey,
+            sourceMeta: { createdManually: true },
+          };
+          nextConceptOrder.push(targetId);
+          nextNodes[targetId] = {
+            conceptId: targetId,
+            position: {
+              x: Math.round((srcNode?.position.x ?? 320) + spreadX),
+              y: Math.round((srcNode?.position.y ?? 120) + 150),
+            },
+            dimensions: dims,
+            pinned: true,
+            customSize: false,
+            computedLayer: (srcNode?.computedLayer ?? 0) + 1,
+          };
+        }
+
+        const relationId = generateUniqueRelationId(state.semantic.relations);
+        const orderIndex = state.semantic.relationOrder.length + 1;
+
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          concepts: nextConcepts,
+          conceptOrder: nextConceptOrder,
+          relations: {
+            ...state.semantic.relations,
+            [relationId]: {
+              id: relationId,
+              orderIndex,
+              sourceId,
+              linkingPhrase: cleanPhrase,
+              targetId,
+              type,
+              rawType: type === 'hierarchical' ? 'hierárquica' : 'ligação cruzada',
+              sourceMeta: { createdManually: true },
+            },
+          },
+          relationOrder: [...state.semantic.relationOrder, relationId],
+        };
+
+        const smartHandles = computeSmartEdgeHandles(
+          nextSemantic,
+          nextNodes,
+          state.visual.layoutSettings.direction
+        );
+
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          nodes: nextNodes,
+          edges: {
+            ...state.visual.edges,
+            [relationId]: {
+              relationId,
+              curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+              sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
+              targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
+              labelOffset: { t: 0.5 },
+            },
+          },
+        };
+
+        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
+        const savedAt = persistDraftSnapshot(
+          nextSemantic,
+          nextVisual,
+          state.sourceFileName,
+          state.diagnostics
+        );
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          metrics: nextMetrics,
+          hasUnsavedChanges: true,
+          lastSavedAt: savedAt,
+          selectedNodeIds: [targetId],
+          selectedEdgeIds: [],
+        });
+
+        return relationId;
       },
 
       updateConceptLabel: (conceptId: ConceptId, newLabel: string) => {

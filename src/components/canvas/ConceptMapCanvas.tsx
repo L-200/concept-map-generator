@@ -13,12 +13,14 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type OnConnectEnd,
+  type OnConnectStart,
   type OnMoveEnd,
   type OnNodeDrag,
   type OnReconnect,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Eye, PinOff } from 'lucide-react';
+import { Eye, FileUp, PinOff, Plus, RefreshCw, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ConceptId,
@@ -27,6 +29,7 @@ import type {
   Point2D,
   RelationId,
 } from '../../domain/types';
+import { fetchDefaultWorkspaceInput } from '../../services/workspaceBridge';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 import { ConceptNode, type ConceptFlowNode } from './ConceptNode';
 import { PropositionEdge, type PropositionFlowEdge } from './PropositionEdge';
@@ -71,6 +74,12 @@ export function ConceptMapCanvas() {
 
   const moveNodes = useConceptMapStore((s) => s.moveNodes);
   const addConcept = useConceptMapStore((s) => s.addConcept);
+  const addConnectedConcept = useConceptMapStore((s) => s.addConnectedConcept);
+  const addPropositionByNames = useConceptMapStore(
+    (s) => s.addPropositionByNames
+  );
+  const createNewEmptyMap = useConceptMapStore((s) => s.createNewEmptyMap);
+  const loadFromMarkdown = useConceptMapStore((s) => s.loadFromMarkdown);
   const addRelation = useConceptMapStore((s) => s.addRelation);
   const reconnectRelation = useConceptMapStore((s) => s.reconnectRelation);
   const setSelection = useConceptMapStore((s) => s.setSelection);
@@ -86,6 +95,10 @@ export function ConceptMapCanvas() {
   const [liveDragPositions, setLiveDragPositions] = useState<
     Record<ConceptId, Point2D>
   >({});
+
+  // Referências para suportar "arrastar conexão para o vazio = criar novo conceito conectado"
+  const connectingNodeIdRef = useRef<ConceptId | null>(null);
+  const didConnectToExistingNodeRef = useRef(false);
 
   // Ajusta câmera ao carregar mapa inicial
   const prevConceptCountRef = useRef(0);
@@ -368,9 +381,15 @@ export function ConceptMapCanvas() {
     [liveDragPositions, moveNodes]
   );
 
+  const handleConnectStart: OnConnectStart = useCallback((_event, params) => {
+    connectingNodeIdRef.current = params.nodeId;
+    didConnectToExistingNodeRef.current = false;
+  }, []);
+
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
+      didConnectToExistingNodeRef.current = true;
       addRelation(
         connection.source,
         connection.target,
@@ -383,6 +402,44 @@ export function ConceptMapCanvas() {
       );
     },
     [addRelation]
+  );
+
+  const handleConnectEnd: OnConnectEnd = useCallback(
+    (event) => {
+      const sourceNodeId = connectingNodeIdRef.current;
+      connectingNodeIdRef.current = null;
+
+      if (!sourceNodeId || didConnectToExistingNodeRef.current) {
+        return;
+      }
+
+      const targetEl = event.target as HTMLElement | null;
+      if (!targetEl || !targetEl.classList.contains('react-flow__pane')) {
+        return;
+      }
+
+      const clientX =
+        'changedTouches' in event
+          ? event.changedTouches[0]?.clientX ?? 0
+          : event.clientX;
+      const clientY =
+        'changedTouches' in event
+          ? event.changedTouches[0]?.clientY ?? 0
+          : event.clientY;
+
+      const flowPos = screenToFlowPosition({ x: clientX, y: clientY });
+      addConnectedConcept(
+        sourceNodeId,
+        'Novo Conceito',
+        'relaciona-se com',
+        'hierarchical',
+        {
+          x: Math.round(flowPos.x - 80),
+          y: Math.round(flowPos.y - 25),
+        }
+      );
+    },
+    [addConnectedConcept, screenToFlowPosition]
   );
 
   const handleReconnect: OnReconnect = useCallback(
@@ -412,6 +469,8 @@ export function ConceptMapCanvas() {
     [visual.nodes]
   );
 
+  const isEmptyMap = semantic.conceptOrder.length === 0;
+
   return (
     <div
       className="relative h-full w-full flex-1 bg-slate-50"
@@ -438,7 +497,9 @@ export function ConceptMapCanvas() {
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onNodeDragStop={handleNodeDragStop}
+        onConnectStart={handleConnectStart}
         onConnect={handleConnect}
+        onConnectEnd={handleConnectEnd}
         onReconnect={handleReconnect}
         onMoveEnd={handleMoveEnd}
         onPaneClick={handlePaneClick}
@@ -473,6 +534,74 @@ export function ConceptMapCanvas() {
           nodeColor={miniMapNodeColor}
         />
       </ReactFlow>
+
+      {/* Painel de Boas-vindas / Criação Manual quando o Mapa está Vazio */}
+      {isEmptyMap && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4">
+          <div className="pointer-events-auto flex w-full max-w-md flex-col items-center rounded-2xl border border-slate-200 bg-white/95 p-6 text-center shadow-xl backdrop-blur">
+            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+              <Sparkles className="h-6 w-6" />
+            </div>
+            <h2 className="text-base font-bold text-slate-900">
+              Comece seu Mapa Conceitual
+            </h2>
+            <p className="mt-1 text-xs leading-relaxed text-slate-600">
+              Crie blocos e ligações livremente ou arraste um arquivo{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-800">
+                .md
+              </code>{' '}
+              diretamente para qualquer lugar da tela.
+            </p>
+
+            <div className="mt-5 flex w-full flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => createNewEmptyMap(true)}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs transition hover:bg-blue-700"
+              >
+                <Plus className="h-4 w-4" />
+                Criar Primeiro Bloco (Conceito Principal)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  addPropositionByNames(
+                    'Conceito Principal',
+                    'divide-se em',
+                    'Subconceito 1',
+                    'hierarchical'
+                  );
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-2 text-xs font-semibold text-blue-800 transition hover:bg-blue-100"
+              >
+                Criar Proposição Inicial (Bloco A → Frase → Bloco B)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  fetchDefaultWorkspaceInput().then((p) => {
+                    loadFromMarkdown(p.content, p.fileName);
+                  });
+                }}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
+                Carregar Mapa de Exemplo (entrada.md)
+              </button>
+            </div>
+
+            <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-400">
+              <FileUp className="h-3.5 w-3.5" />
+              <span>
+                Dica: dê <strong>duplo clique</strong> no fundo para criar um
+                bloco onde quiser
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Legenda Interativa & Filtro de Ligações Cruzadas (Canto Inferior Esquerdo) */}
       <div className="pointer-events-auto absolute bottom-4 left-4 z-20 flex flex-col gap-2 rounded-xl border border-slate-200/90 bg-white/95 p-3 text-xs shadow-lg backdrop-blur">
@@ -547,3 +676,4 @@ export function ConceptMapCanvas() {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-import { AlertTriangle, FileText, Table, Trash2, X } from 'lucide-react';
+import { AlertTriangle, FileText, Plus, Table, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import type { RelationType } from '../../domain/types';
 import { exportSemanticToMarkdown } from '../../services/export/fileExporter';
@@ -15,6 +15,9 @@ export function PropositionsDrawer({
 }: PropositionsDrawerProps) {
   const semantic = useConceptMapStore((s) => s.semantic);
   const diagnostics = useConceptMapStore((s) => s.diagnostics);
+  const addPropositionByNames = useConceptMapStore(
+    (s) => s.addPropositionByNames
+  );
   const updateRelation = useConceptMapStore((s) => s.updateRelation);
   const deleteElements = useConceptMapStore((s) => s.deleteElements);
   const setSelection = useConceptMapStore((s) => s.setSelection);
@@ -23,11 +26,24 @@ export function PropositionsDrawer({
   const [activeTab, setActiveTab] = useState<'table' | 'markdown'>('table');
   const [rawMdDraft, setRawMdDraft] = useState('');
 
+  // Campos para adicionar nova proposição direto na tabela
+  const [newSource, setNewSource] = useState('');
+  const [newPhrase, setNewPhrase] = useState('relaciona-se com');
+  const [newTarget, setNewTarget] = useState('');
+  const [newType, setNewType] = useState<RelationType>('hierarchical');
+
   if (!isOpen) return null;
 
   const openMarkdownTab = () => {
     setRawMdDraft(exportSemanticToMarkdown(semantic));
     setActiveTab('markdown');
+  };
+
+  const handleAddRow = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSource.trim() || !newTarget.trim()) return;
+    addPropositionByNames(newSource, newPhrase, newTarget, newType);
+    setNewTarget('');
   };
 
   return (
@@ -93,99 +109,166 @@ export function PropositionsDrawer({
 
         {/* Conteúdo Principal */}
         {activeTab === 'table' ? (
-          <div className="flex-1 overflow-y-auto p-4">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase text-slate-600">
-                <tr>
-                  <th className="w-12 px-2.5 py-2">#</th>
-                  <th className="px-2.5 py-2">Conceito A (Origem)</th>
-                  <th className="px-2.5 py-2">Frase de ligação</th>
-                  <th className="px-2.5 py-2">Conceito B (Destino)</th>
-                  <th className="w-40 px-2.5 py-2">Tipo</th>
-                  <th className="w-16 px-2.5 py-2 text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {semantic.relationOrder.map((relId) => {
-                  const rel = semantic.relations[relId];
-                  if (!rel) return null;
-                  const src = semantic.concepts[rel.sourceId];
-                  const tgt = semantic.concepts[rel.targetId];
+          <div className="flex flex-1 flex-col overflow-hidden">
+            {/* Barra de Adição Rápida de Proposição */}
+            <form
+              onSubmit={handleAddRow}
+              className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50/80 px-4 py-2.5 text-xs"
+            >
+              <datalist id="drawer-concepts-datalist">
+                {semantic.conceptOrder.map((cId) => (
+                  <option key={cId} value={semantic.concepts[cId]?.label} />
+                ))}
+              </datalist>
+              <input
+                type="text"
+                list="drawer-concepts-datalist"
+                required
+                placeholder="Conceito A (Origem)..."
+                value={newSource}
+                onChange={(e) => setNewSource(e.target.value)}
+                className="min-w-[150px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                required
+                placeholder="Frase de ligação..."
+                value={newPhrase}
+                onChange={(e) => setNewPhrase(e.target.value)}
+                className="min-w-[140px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs italic text-slate-800 focus:border-blue-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                list="drawer-concepts-datalist"
+                required
+                placeholder="Conceito B (Destino)..."
+                value={newTarget}
+                onChange={(e) => setNewTarget(e.target.value)}
+                className="min-w-[150px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
+              />
+              <select
+                value={newType}
+                onChange={(e) => setNewType(e.target.value as RelationType)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="hierarchical">hierárquica</option>
+                <option value="cross-link">ligação cruzada</option>
+              </select>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Adicionar
+              </button>
+            </form>
 
-                  return (
-                    <tr key={rel.id} className="hover:bg-slate-50">
-                      <td className="px-2.5 py-1.5 font-mono text-slate-400">
-                        {rel.orderIndex}
-                      </td>
-                      <td className="px-2.5 py-1.5 font-semibold text-slate-800">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelection([rel.sourceId], []);
-                            onClose();
-                          }}
-                          className="hover:text-blue-600 hover:underline text-left"
-                        >
-                          {src?.label}
-                        </button>
-                      </td>
-                      <td className="px-2.5 py-1.5">
-                        <input
-                          type="text"
-                          value={rel.linkingPhrase}
-                          onChange={(e) =>
-                            updateRelation(rel.id, {
-                              linkingPhrase: e.target.value,
-                            })
-                          }
-                          className="w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 italic text-slate-700 hover:border-slate-200 focus:border-blue-500 focus:bg-white focus:outline-none"
-                        />
-                      </td>
-                      <td className="px-2.5 py-1.5 font-semibold text-slate-800">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelection([rel.targetId], []);
-                            onClose();
-                          }}
-                          className="hover:text-blue-600 hover:underline text-left"
-                        >
-                          {tgt?.label}
-                        </button>
-                      </td>
-                      <td className="px-2.5 py-1.5">
-                        <select
-                          value={rel.type}
-                          onChange={(e) =>
-                            updateRelation(rel.id, {
-                              type: e.target.value as RelationType,
-                            })
-                          }
-                          className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
-                            rel.type === 'cross-link'
-                              ? 'bg-amber-100 text-amber-900'
-                              : 'bg-slate-100 text-slate-700'
-                          }`}
-                        >
-                          <option value="hierarchical">hierárquica</option>
-                          <option value="cross-link">ligação cruzada</option>
-                        </select>
-                      </td>
-                      <td className="px-2.5 py-1.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => deleteElements([], [rel.id])}
-                          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                          title="Excluir proposição"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+            <div className="flex-1 overflow-y-auto p-4">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase text-slate-600">
+                  <tr>
+                    <th className="w-12 px-2.5 py-2">#</th>
+                    <th className="px-2.5 py-2">Conceito A (Origem)</th>
+                    <th className="px-2.5 py-2">Frase de ligação</th>
+                    <th className="px-2.5 py-2">Conceito B (Destino)</th>
+                    <th className="w-40 px-2.5 py-2">Tipo</th>
+                    <th className="w-16 px-2.5 py-2 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {semantic.relationOrder.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={6}
+                        className="py-8 text-center text-xs text-slate-400"
+                      >
+                        Nenhuma proposição cadastrada ainda. Use o formulário
+                        acima para adicionar ligações ao mapa.
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ) : (
+                    semantic.relationOrder.map((relId) => {
+                      const rel = semantic.relations[relId];
+                      if (!rel) return null;
+                      const src = semantic.concepts[rel.sourceId];
+                      const tgt = semantic.concepts[rel.targetId];
+
+                      return (
+                        <tr key={rel.id} className="hover:bg-slate-50">
+                          <td className="px-2.5 py-1.5 font-mono text-slate-400">
+                            {rel.orderIndex}
+                          </td>
+                          <td className="px-2.5 py-1.5 font-semibold text-slate-800">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelection([rel.sourceId], []);
+                                onClose();
+                              }}
+                              className="hover:text-blue-600 hover:underline text-left"
+                            >
+                              {src?.label}
+                            </button>
+                          </td>
+                          <td className="px-2.5 py-1.5">
+                            <input
+                              type="text"
+                              value={rel.linkingPhrase}
+                              onChange={(e) =>
+                                updateRelation(rel.id, {
+                                  linkingPhrase: e.target.value,
+                                })
+                              }
+                              className="w-full rounded border border-transparent bg-transparent px-1.5 py-0.5 italic text-slate-700 hover:border-slate-200 focus:border-blue-500 focus:bg-white focus:outline-none"
+                            />
+                          </td>
+                          <td className="px-2.5 py-1.5 font-semibold text-slate-800">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelection([rel.targetId], []);
+                                onClose();
+                              }}
+                              className="hover:text-blue-600 hover:underline text-left"
+                            >
+                              {tgt?.label}
+                            </button>
+                          </td>
+                          <td className="px-2.5 py-1.5">
+                            <select
+                              value={rel.type}
+                              onChange={(e) =>
+                                updateRelation(rel.id, {
+                                  type: e.target.value as RelationType,
+                                })
+                              }
+                              className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                                rel.type === 'cross-link'
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              <option value="hierarchical">hierárquica</option>
+                              <option value="cross-link">ligação cruzada</option>
+                            </select>
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => deleteElements([], [rel.id])}
+                              className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                              title="Excluir proposição"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <div className="flex flex-1 flex-col gap-3 p-4">
@@ -217,3 +300,4 @@ export function PropositionsDrawer({
     </div>
   );
 }
+
