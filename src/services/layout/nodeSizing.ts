@@ -47,21 +47,23 @@ export function estimateConceptNodeDimensions(
 }
 
 /**
- * Estima as dimensões da pílula da frase de ligação sobre a aresta.
+ * Estima as dimensões da pílula da frase de ligação sobre a aresta,
+ * alinhada à tipografia real (11.5px Inter + padding px-2 py-0.5) do canvas.
  */
 export function estimateEdgeLabelDimensions(linkingPhrase: string): Dimensions2D {
   const clean = linkingPhrase.trim() || 'relaciona';
   const charCount = clean.length;
 
-  const maxWidth = 160;
-  const minWidth = 64;
-  const width = Math.min(maxWidth, Math.max(minWidth, charCount * 6.8 + 20));
-  const charsPerLine = Math.max(12, Math.floor((width - 16) / 6.5));
+  const maxWidth = 156;
+  const minWidth = 48;
+  const width = Math.min(maxWidth, Math.max(minWidth, charCount * 5.6 + 16));
+  const charsPerLine = Math.max(12, Math.floor((width - 14) / 5.5));
   const lines = Math.max(1, Math.ceil(charCount / charsPerLine));
-  const height = 12 + lines * 16;
+  const height = 10 + lines * 14;
 
   return {
     width: Math.round(width),
     height: Math.round(height),
   };
 }
+

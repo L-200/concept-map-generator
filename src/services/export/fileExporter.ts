@@ -1,3 +1,9 @@
+import {
+  getBezierPath,
+  getSmoothStepPath,
+  getStraightPath,
+  Position,
+} from '@xyflow/react';
 import type {
   ConceptId,
   ConceptMapDocument,
@@ -66,56 +72,93 @@ function getHandlePoint(
   }
 }
 
+function toFlowPosition(
+  handle: HandlePosition | undefined,
+  isSource: boolean
+): Position {
+  switch (handle) {
+    case 'top':
+      return Position.Top;
+    case 'right':
+      return Position.Right;
+    case 'left':
+      return Position.Left;
+    case 'bottom':
+      return Position.Bottom;
+    default:
+      return isSource ? Position.Bottom : Position.Top;
+  }
+}
+
+interface PreparedEdgeLabel {
+  relId: string;
+  phrase: string;
+  isCross: boolean;
+  lx: number;
+  ly: number;
+  srcPt: Point2D;
+  tgtPt: Point2D;
+  width: number;
+  height: number;
+  lines: string[];
+}
+
 /**
- * Gera uma curva cúbica de Bézier suave entre dois pontos com base nas direções das portas.
+ * Resolve sobreposições entre caixas de frases de ligação (edge labels)
+ * deslocando-as ao longo da própria aresta (verticalmente/diagonalmente) e lateralmente
+ * para que duas frases nunca fiquem mescladas na imagem exportada.
  */
-function buildCubicBezierPath(
-  src: Point2D,
-  tgt: Point2D,
-  sourceHandle: HandlePosition | undefined,
-  targetHandle: HandlePosition | undefined,
-  parallelOffset = 0
-): { path: string; mid: Point2D } {
-  const dist = Math.hypot(tgt.x - src.x, tgt.y - src.y);
-  const offset = Math.min(140, Math.max(45, dist * 0.35));
+function resolveEdgeLabelOverlaps(labels: PreparedEdgeLabel[]): void {
+  if (labels.length <= 1) return;
 
-  const dirVector = (h: HandlePosition | undefined, isSource: boolean): Point2D => {
-    switch (h) {
-      case 'top':
-        return { x: 0, y: -1 };
-      case 'right':
-        return { x: 1, y: 0 };
-      case 'left':
-        return { x: -1, y: 0 };
-      case 'bottom':
-        return { x: 0, y: 1 };
-      default:
-        return { x: 0, y: isSource ? 1 : -1 };
+  const padX = 14;
+  const padY = 8;
+
+  for (let iter = 0; iter < 20; iter++) {
+    let moved = false;
+
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) {
+        const a = labels[i];
+        const b = labels[j];
+
+        const wA = a.width + padX;
+        const hA = a.height + padY;
+        const wB = b.width + padX;
+        const hB = b.height + padY;
+
+        const overlapX = (wA + wB) / 2 - Math.abs(b.lx - a.lx);
+        const overlapY = (hA + hB) / 2 - Math.abs(b.ly - a.ly);
+
+        if (overlapX > 0 && overlapY > 0) {
+          moved = true;
+          // Se as duas pílulas estão praticamente na mesma altura Y (ex: dois ramos saindo do mesmo pai),
+          // escalona verticalmente uma para cima e outra para baixo ao longo de suas arestas + afasta em X
+          if (Math.abs(b.ly - a.ly) < 18) {
+            const signY = i < j ? -1 : 1;
+            const shiftY = Math.min(18, overlapY / 2 + 4);
+            a.ly += signY * shiftY;
+            b.ly -= signY * shiftY;
+
+            const signX = b.lx >= a.lx ? 1 : -1;
+            const shiftX = overlapX / 2 + 2;
+            a.lx -= signX * shiftX;
+            b.lx += signX * shiftX;
+          } else if (overlapX < overlapY) {
+            const signX = b.lx >= a.lx ? 1 : -1;
+            a.lx -= (signX * overlapX) / 2;
+            b.lx += (signX * overlapX) / 2;
+          } else {
+            const signY = b.ly >= a.ly ? 1 : -1;
+            a.ly -= (signY * overlapY) / 2;
+            b.ly += (signY * overlapY) / 2;
+          }
+        }
+      }
     }
-  };
 
-  const sDir = dirVector(sourceHandle, true);
-  const tDir = dirVector(targetHandle, false);
-
-  const cp1 = {
-    x: src.x + sDir.x * offset + parallelOffset,
-    y: src.y + sDir.y * offset,
-  };
-  const cp2 = {
-    x: tgt.x + tDir.x * offset + parallelOffset,
-    y: tgt.y + tDir.y * offset,
-  };
-
-  // Ponto médio em t = 0.5 da curva cúbica de Bézier
-  const mid = {
-    x: 0.125 * src.x + 0.375 * cp1.x + 0.375 * cp2.x + 0.125 * tgt.x,
-    y: 0.125 * src.y + 0.375 * cp1.y + 0.375 * cp2.y + 0.125 * tgt.y,
-  };
-
-  return {
-    path: `M ${src.x.toFixed(1)} ${src.y.toFixed(1)} C ${cp1.x.toFixed(1)} ${cp1.y.toFixed(1)}, ${cp2.x.toFixed(1)} ${cp2.y.toFixed(1)}, ${tgt.x.toFixed(1)} ${tgt.y.toFixed(1)}`,
-    mid,
-  };
+    if (!moved) break;
+  }
 }
 
 /**
@@ -149,12 +192,6 @@ export function generateStandaloneVectorSvg(
     if (n.position.y + h > maxY) maxY = n.position.y + h;
   }
 
-  const padding = 64;
-  const viewBoxX = Math.floor(minX - padding);
-  const viewBoxY = Math.floor(minY - padding);
-  const viewBoxW = Math.ceil(maxX - minX + padding * 2);
-  const viewBoxH = Math.ceil(maxY - minY + padding * 2);
-
   // Agrupa arestas paralelas entre o mesmo par de nós
   const pairCounts: Record<string, string[]> = {};
   for (const relId of semantic.relationOrder) {
@@ -169,7 +206,7 @@ export function generateStandaloneVectorSvg(
   }
 
   const edgePathsSvg: string[] = [];
-  const edgeLabelsSvg: string[] = [];
+  const preparedLabels: PreparedEdgeLabel[] = [];
 
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
@@ -202,6 +239,9 @@ export function generateStandaloneVectorSvg(
       edgeVis.targetHandle
     );
 
+    const sourcePosition = toFlowPosition(edgeVis.sourceHandle, true);
+    const targetPosition = toFlowPosition(edgeVis.targetHandle, false);
+
     const pairKey =
       rel.sourceId < rel.targetId
         ? `${rel.sourceId}--${rel.targetId}`
@@ -211,15 +251,54 @@ export function generateStandaloneVectorSvg(
     const parallelOffset =
       siblings.length > 1 ? (pIdx - (siblings.length - 1) / 2) * 34 : 0;
 
-    const { path, mid } = buildCubicBezierPath(
-      srcPt,
-      tgtPt,
-      edgeVis.sourceHandle,
-      edgeVis.targetHandle,
-      parallelOffset
-    );
-
     const isCross = rel.type === 'cross-link';
+    const curveType =
+      edgeVis.curveType ?? (isCross ? 'bezier' : 'smoothstep');
+
+    // Usa exatamente os mesmos geradores geométricos do React Flow (PropositionEdge.tsx)
+    let path = '';
+    let baseLabelX = (srcPt.x + tgtPt.x) / 2;
+    let baseLabelY = (srcPt.y + tgtPt.y) / 2;
+
+    if (curveType === 'straight' && parallelOffset === 0) {
+      const [p, lx, ly] = getStraightPath({
+        sourceX: srcPt.x,
+        sourceY: srcPt.y,
+        targetX: tgtPt.x,
+        targetY: tgtPt.y,
+      });
+      path = p;
+      baseLabelX = lx;
+      baseLabelY = ly;
+    } else if (curveType === 'smoothstep' && !isCross && parallelOffset === 0) {
+      const [p, lx, ly] = getSmoothStepPath({
+        sourceX: srcPt.x,
+        sourceY: srcPt.y,
+        sourcePosition,
+        targetX: tgtPt.x,
+        targetY: tgtPt.y,
+        targetPosition,
+        borderRadius: 12,
+      });
+      path = p;
+      baseLabelX = lx;
+      baseLabelY = ly;
+    } else {
+      const curvature = isCross ? 0.38 : 0.25;
+      const [p, lx, ly] = getBezierPath({
+        sourceX: srcPt.x,
+        sourceY: srcPt.y,
+        sourcePosition,
+        targetX: tgtPt.x,
+        targetY: tgtPt.y,
+        targetPosition,
+        curvature,
+      });
+      path = p;
+      baseLabelX = lx;
+      baseLabelY = ly;
+    }
+
     const stroke = isCross ? '#d97706' : '#475569';
     const dashAttr = isCross ? ' stroke-dasharray="8 5"' : '';
     const markerId = isCross ? 'url(#arrow-cross)' : 'url(#arrow-hier)';
@@ -228,42 +307,72 @@ export function generateStandaloneVectorSvg(
       `    <path id="edge-${escapeXml(rel.id)}" d="${path}" fill="none" stroke="${stroke}" stroke-width="2"${dashAttr} marker-end="${markerId}" />`
     );
 
-    // Posição paramétrica do rótulo
     const t = edgeVis.labelOffset?.t ?? 0.5;
     const tDelta = t - 0.5;
-    const lx = mid.x + (tgtPt.x - srcPt.x) * tDelta * 0.55;
-    const ly = mid.y + (tgtPt.y - srcPt.y) * tDelta * 0.55;
+    const lx =
+      baseLabelX + (tgtPt.x - srcPt.x) * tDelta * 0.55 + parallelOffset;
+    const ly = baseLabelY + (tgtPt.y - srcPt.y) * tDelta * 0.55;
 
     const phrase = rel.linkingPhrase || '';
     const labelDim = estimateEdgeLabelDimensions(phrase);
     const lines = wrapTextLines(phrase, 22);
 
-    const pillBg = isCross ? '#fffbeb' : '#ffffff';
-    const pillBorder = isCross ? '#f59e0b' : '#cbd5e1';
-    const pillText = isCross ? '#92400e' : '#1e293b';
+    preparedLabels.push({
+      relId: rel.id,
+      phrase,
+      isCross,
+      lx,
+      ly,
+      srcPt,
+      tgtPt,
+      width: labelDim.width,
+      height: labelDim.height,
+      lines,
+    });
+  }
 
-    const rectX = lx - labelDim.width / 2;
-    const rectY = ly - labelDim.height / 2;
+  // Resolve qualquer sobreposição residual entre pílulas de frases de ligação
+  resolveEdgeLabelOverlaps(preparedLabels);
 
-    const tspans = lines
+  const edgeLabelsSvg: string[] = [];
+  for (const item of preparedLabels) {
+    const pillBg = item.isCross ? '#fffbeb' : '#ffffff';
+    const pillBorder = item.isCross ? '#f59e0b' : '#cbd5e1';
+    const pillText = item.isCross ? '#92400e' : '#1e293b';
+
+    const rectX = item.lx - item.width / 2;
+    const rectY = item.ly - item.height / 2;
+
+    if (rectX < minX) minX = rectX;
+    if (rectY < minY) minY = rectY;
+    if (rectX + item.width > maxX) maxX = rectX + item.width;
+    if (rectY + item.height > maxY) maxY = rectY + item.height;
+
+    const tspans = item.lines
       .map((line, i) => {
         const lineY =
           rectY +
-          15 +
+          14 +
           i * 14 +
-          (labelDim.height - lines.length * 14) / 2 -
-          4;
-        return `<tspan x="${lx.toFixed(1)}" y="${lineY.toFixed(1)}">${escapeXml(line)}</tspan>`;
+          (item.height - item.lines.length * 14) / 2 -
+          3;
+        return `<tspan x="${item.lx.toFixed(1)}" y="${lineY.toFixed(1)}">${escapeXml(line)}</tspan>`;
       })
       .join('');
 
     edgeLabelsSvg.push(
-      `    <g class="edge-label" data-relation-id="${escapeXml(rel.id)}">
-      <rect x="${rectX.toFixed(1)}" y="${rectY.toFixed(1)}" width="${labelDim.width}" height="${labelDim.height}" rx="6" fill="${pillBg}" stroke="${pillBorder}" stroke-width="1" />
+      `    <g class="edge-label" data-relation-id="${escapeXml(item.relId)}">
+      <rect x="${rectX.toFixed(1)}" y="${rectY.toFixed(1)}" width="${item.width}" height="${item.height}" rx="6" fill="${pillBg}" stroke="${pillBorder}" stroke-width="1" />
       <text text-anchor="middle" fill="${pillText}" font-family="Inter, system-ui, Ubuntu, sans-serif" font-size="11.5" font-weight="500">${tspans}</text>
     </g>`
     );
   }
+
+  const padding = 64;
+  const viewBoxX = Math.floor(minX - padding);
+  const viewBoxY = Math.floor(minY - padding);
+  const viewBoxW = Math.ceil(maxX - minX + padding * 2);
+  const viewBoxH = Math.ceil(maxY - minY + padding * 2);
 
   const nodesSvg: string[] = [];
   for (const id of conceptIds) {

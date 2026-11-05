@@ -509,6 +509,7 @@ export function ConceptMapCanvas() {
         selectionMode={SelectionMode.Partial}
         zoomOnDoubleClick={false}
         deleteKeyCode={null}
+        panActivationKeyCode={null}
         minZoom={0.15}
         maxZoom={2.5}
         fitView

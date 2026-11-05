@@ -247,7 +247,9 @@ export function PropositionEdge({
                 value={draftPhrase}
                 onChange={(e) => setDraftPhrase(e.target.value)}
                 onBlur={commitEdit}
+                onKeyUp={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
+                  e.stopPropagation();
                   if (e.key === 'Enter') {
                     e.preventDefault();
                     commitEdit();
@@ -257,7 +259,7 @@ export function PropositionEdge({
                     setIsEditing(false);
                   }
                 }}
-                className="w-32 rounded border border-blue-400 bg-white px-1 py-0.5 text-center text-xs text-slate-900 focus:outline-none"
+                className="nodrag nopan w-32 rounded border border-blue-400 bg-white px-1 py-0.5 text-center text-xs text-slate-900 focus:outline-none"
               />
             ) : (
               <span className="select-none break-words">

@@ -140,7 +140,7 @@ export function computeSmartEdgeHandles(
  * as pílulas das frases de ligação quando várias conexões saem do mesmo nó hub,
  * evitando colisão de rótulos.
  */
-function computeEdgeLabelOffsets(
+export function computeEdgeLabelOffsets(
   semantic: SemanticModel
 ): Record<RelationId, { t: number; x: number; y: number }> {
   const offsets: Record<RelationId, { t: number; x: number; y: number }> = {};
@@ -161,8 +161,8 @@ function computeEdgeLabelOffsets(
       continue;
     }
 
-    // Alterna t suavemente (ex: 0.42, 0.58, 0.36, 0.64...) para escalonar as pílulas
-    const candidates = [0.5, 0.4, 0.6, 0.34, 0.66, 0.45, 0.55];
+    // Escalonamento vertical claro (ex: 0.38 e 0.62 quando há 2 filhos) para evitar colisão horizontal das pílulas
+    const candidates = [0.38, 0.62, 0.5, 0.32, 0.68, 0.44, 0.56];
     relIds.forEach((relId, idx) => {
       offsets[relId] = {
         t: candidates[idx % candidates.length],
@@ -757,6 +757,9 @@ export async function computeConceptMapLayout(
       targetHandle: 'top',
     };
 
+    const hasCustomOffset =
+      prevEdge?.labelOffset?.t !== undefined && prevEdge.labelOffset.t !== 0.5;
+
     nextEdges[relId] = {
       relationId: relId,
       curveType:
@@ -764,7 +767,9 @@ export async function computeConceptMapLayout(
         (rel.type === 'hierarchical' ? 'smoothstep' : 'bezier'),
       sourceHandle: handles.sourceHandle,
       targetHandle: handles.targetHandle,
-      labelOffset: prevEdge?.labelOffset ?? labelOffsets[relId] ?? { t: 0.5 },
+      labelOffset: hasCustomOffset
+        ? prevEdge!.labelOffset
+        : labelOffsets[relId] ?? { t: 0.5 },
       style: prevEdge?.style,
     };
   }

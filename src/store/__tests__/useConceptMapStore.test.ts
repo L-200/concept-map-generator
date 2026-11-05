@@ -159,6 +159,40 @@ describe('useConceptMapStore & Undo/Redo (Etapa 4)', () => {
     const finalState = useConceptMapStore.getState();
     expect(finalState.metrics.totalConcepts).toBe(3);
     expect(finalState.metrics.totalRelations).toBe(2);
+
+    // Verifica que arestas irmãs saindo do mesmo nó recebem offsets escalonados (38% e 62%)
+    const edgeOffsets = Object.values(finalState.visual.edges).map(
+      (e) => e.labelOffset?.t
+    );
+    expect(edgeOffsets).toContain(0.38);
+    expect(edgeOffsets).toContain(0.62);
+  });
+
+  it('preserva espaços entre palavras (inclusive espaço final durante digitação) ao editar conexões e conceitos', () => {
+    const store = useConceptMapStore.getState();
+
+    // Simula digitação tecla a tecla com espaço no final ("relaciona ", "relaciona com ")
+    store.updateRelation('rel-1', { linkingPhrase: 'relaciona ' });
+    expect(useConceptMapStore.getState().semantic.relations['rel-1'].linkingPhrase).toBe(
+      'relaciona '
+    );
+
+    store.updateRelation('rel-1', { linkingPhrase: 'relaciona com ' });
+    expect(useConceptMapStore.getState().semantic.relations['rel-1'].linkingPhrase).toBe(
+      'relaciona com '
+    );
+
+    store.updateRelation('rel-1', { linkingPhrase: 'relaciona com vários blocos' });
+    expect(useConceptMapStore.getState().semantic.relations['rel-1'].linkingPhrase).toBe(
+      'relaciona com vários blocos'
+    );
+
+    // Simula digitação com espaço no rótulo de conceito
+    store.updateConceptLabel('concept-projeto-pop', 'Projeto ');
+    expect(
+      useConceptMapStore.getState().semantic.concepts['concept-projeto-pop'].label
+    ).toBe('Projeto ');
   });
 });
+
 

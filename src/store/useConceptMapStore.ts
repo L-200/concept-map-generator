@@ -20,6 +20,7 @@ import type {
 } from '../domain/types';
 import {
   computeConceptMapLayout,
+  computeEdgeLabelOffsets,
   computeSmartEdgeHandles,
   DEFAULT_LAYOUT_SETTINGS,
 } from '../services/layout/layoutEngine';
@@ -268,7 +269,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
                 conceptId: starterId,
                 position: { x: 400, y: 120 },
                 dimensions: starterDims,
-                pinned: true,
+                pinned: false,
                 customSize: false,
                 computedLayer: 0,
               },
@@ -459,7 +460,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               conceptId: id,
               position: targetPos,
               dimensions,
-              pinned: true, // Nós criados em posição específica pelo usuário já nascem fixados
+              pinned: false,
               customSize: false,
               computedLayer: 0,
             },
@@ -569,7 +570,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
             conceptId: newConceptId,
             position: targetPos,
             dimensions,
-            pinned: true,
+            pinned: false,
             customSize: false,
             computedLayer: (sourceNodeVis.computedLayer ?? 0) + 1,
           },
@@ -580,20 +581,37 @@ export const useConceptMapStore = create<ConceptMapState>()(
           nextNodes,
           state.visual.layoutSettings.direction
         );
+        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
+
+        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
+          ...state.visual.edges,
+          [relationId]: {
+            relationId,
+            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
+            targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
+            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+          },
+        };
+
+        // Atualiza também o escalonamento das arestas irmãs que saem do mesmo sourceId
+        for (const rId of nextSemantic.relationOrder) {
+          if (
+            nextSemantic.relations[rId]?.sourceId === sourceId &&
+            updatedEdges[rId] &&
+            labelOffsets[rId]
+          ) {
+            updatedEdges[rId] = {
+              ...updatedEdges[rId],
+              labelOffset: labelOffsets[rId],
+            };
+          }
+        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: nextNodes,
-          edges: {
-            ...state.visual.edges,
-            [relationId]: {
-              relationId,
-              curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
-              sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
-              targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
-              labelOffset: { t: 0.5 },
-            },
-          },
+          edges: updatedEdges,
         };
 
         const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
@@ -658,7 +676,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               y: Math.round(120 + Math.floor(idx / 4) * 150),
             },
             dimensions: dims,
-            pinned: true,
+            pinned: false,
             customSize: false,
             computedLayer: 0,
           };
@@ -695,7 +713,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               y: Math.round((srcNode?.position.y ?? 120) + 150),
             },
             dimensions: dims,
-            pinned: true,
+            pinned: false,
             customSize: false,
             computedLayer: (srcNode?.computedLayer ?? 0) + 1,
           };
@@ -729,20 +747,36 @@ export const useConceptMapStore = create<ConceptMapState>()(
           nextNodes,
           state.visual.layoutSettings.direction
         );
+        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
+
+        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
+          ...state.visual.edges,
+          [relationId]: {
+            relationId,
+            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
+            targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
+            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+          },
+        };
+
+        for (const rId of nextSemantic.relationOrder) {
+          if (
+            nextSemantic.relations[rId]?.sourceId === sourceId &&
+            updatedEdges[rId] &&
+            labelOffsets[rId]
+          ) {
+            updatedEdges[rId] = {
+              ...updatedEdges[rId],
+              labelOffset: labelOffsets[rId],
+            };
+          }
+        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: nextNodes,
-          edges: {
-            ...state.visual.edges,
-            [relationId]: {
-              relationId,
-              curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
-              sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
-              targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
-              labelOffset: { t: 0.5 },
-            },
-          },
+          edges: updatedEdges,
         };
 
         const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
@@ -769,8 +803,11 @@ export const useConceptMapStore = create<ConceptMapState>()(
       updateConceptLabel: (conceptId: ConceptId, newLabel: string) => {
         const state = get();
         const existing = state.semantic.concepts[conceptId];
-        const cleanLabel = cleanDisplayText(newLabel);
-        if (!existing || !cleanLabel || existing.label === cleanLabel) return;
+        // Preserva espaços digitados entre palavras nos campos controlados (sem dar trim a cada tecla)
+        const sanitizedLabel = newLabel.replace(/\r?\n/g, ' ');
+        if (!existing || !sanitizedLabel.trim() || existing.label === sanitizedLabel) {
+          return;
+        }
 
         const nextSemantic: SemanticModel = {
           ...state.semantic,
@@ -778,15 +815,15 @@ export const useConceptMapStore = create<ConceptMapState>()(
             ...state.semantic.concepts,
             [conceptId]: {
               ...existing,
-              label: cleanLabel,
-              normalizedKey: normalizeConceptKey(cleanLabel),
+              label: sanitizedLabel,
+              normalizedKey: normalizeConceptKey(sanitizedLabel),
             },
           },
         };
 
         const prevNodeVisual = state.visual.nodes[conceptId];
         const nextDimensions = estimateConceptNodeDimensions(
-          cleanLabel,
+          sanitizedLabel,
           prevNodeVisual?.dimensions,
           prevNodeVisual?.customSize
         );
@@ -1135,21 +1172,37 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.nodes,
           state.visual.layoutSettings.direction
         );
+        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
+
+        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
+          ...state.visual.edges,
+          [relationId]: {
+            relationId,
+            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            sourceHandle:
+              handles?.sourceHandle ?? smartHandles[relationId]?.sourceHandle ?? 'bottom',
+            targetHandle:
+              handles?.targetHandle ?? smartHandles[relationId]?.targetHandle ?? 'top',
+            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+          },
+        };
+
+        for (const rId of nextSemantic.relationOrder) {
+          if (
+            nextSemantic.relations[rId]?.sourceId === sourceId &&
+            updatedEdges[rId] &&
+            labelOffsets[rId]
+          ) {
+            updatedEdges[rId] = {
+              ...updatedEdges[rId],
+              labelOffset: labelOffsets[rId],
+            };
+          }
+        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
-          edges: {
-            ...state.visual.edges,
-            [relationId]: {
-              relationId,
-              curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
-              sourceHandle:
-                handles?.sourceHandle ?? smartHandles[relationId]?.sourceHandle ?? 'bottom',
-              targetHandle:
-                handles?.targetHandle ?? smartHandles[relationId]?.targetHandle ?? 'top',
-              labelOffset: { t: 0.5 },
-            },
-          },
+          edges: updatedEdges,
         };
 
         const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
@@ -1188,9 +1241,10 @@ export const useConceptMapStore = create<ConceptMapState>()(
           updates.targetId && state.semantic.concepts[updates.targetId]
             ? updates.targetId
             : existingRel.targetId;
+        // Preserva espaços digitados entre palavras nos campos de edição (sem remover espaço final a cada tecla)
         const nextPhrase =
           updates.linkingPhrase !== undefined
-            ? cleanDisplayText(updates.linkingPhrase)
+            ? updates.linkingPhrase.replace(/\r?\n/g, ' ')
             : existingRel.linkingPhrase;
 
         const nextSemantic: SemanticModel = {

@@ -1,0 +1,290 @@
+{
+  "schemaVersion": "1.0.0",
+  "metadata": {
+    "id": "concept-map-doc",
+    "sourceFileName": "novo-mapa.md",
+    "createdAt": "2026-11-05T19:08:00.252Z",
+    "updatedAt": "2026-11-05T19:08:00.252Z",
+    "originalColumnCount": 5
+  },
+  "semantic": {
+    "title": "Novo Mapa Conceitual",
+    "concepts": {
+      "concept-conceito-principal": {
+        "id": "concept-conceito-principal",
+        "label": "Conceito Principal",
+        "normalizedKey": "conceito principal",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-novo-conceito": {
+        "id": "concept-novo-conceito",
+        "label": "Novo Conceito",
+        "normalizedKey": "novo conceito",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-novo-conceito-2": {
+        "id": "concept-novo-conceito-2",
+        "label": "Novo Conceito",
+        "normalizedKey": "novo conceito",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-novo-conceito-4": {
+        "id": "concept-novo-conceito-4",
+        "label": "Novo Conceito",
+        "normalizedKey": "novo conceito",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-novo-conceito-5": {
+        "id": "concept-novo-conceito-5",
+        "label": "Novo Conceito",
+        "normalizedKey": "novo conceito",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-novo-conceito-6": {
+        "id": "concept-novo-conceito-6",
+        "label": "Novo Conceito",
+        "normalizedKey": "novo conceito",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      }
+    },
+    "conceptOrder": [
+      "concept-conceito-principal",
+      "concept-novo-conceito",
+      "concept-novo-conceito-2",
+      "concept-novo-conceito-4",
+      "concept-novo-conceito-5",
+      "concept-novo-conceito-6"
+    ],
+    "relations": {
+      "rel-1": {
+        "id": "rel-1",
+        "orderIndex": 1,
+        "sourceId": "concept-conceito-principal",
+        "linkingPhrase": "relaciona-se com",
+        "targetId": "concept-novo-conceito",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-2": {
+        "id": "rel-2",
+        "orderIndex": 2,
+        "sourceId": "concept-conceito-principal",
+        "linkingPhrase": "relaciona-se com",
+        "targetId": "concept-novo-conceito-2",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-4": {
+        "id": "rel-4",
+        "orderIndex": 3,
+        "sourceId": "concept-novo-conceito",
+        "linkingPhrase": "relaciona-se com",
+        "targetId": "concept-novo-conceito-4",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-5": {
+        "id": "rel-5",
+        "orderIndex": 4,
+        "sourceId": "concept-novo-conceito-4",
+        "linkingPhrase": "relaciona-se com",
+        "targetId": "concept-novo-conceito-5",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-6": {
+        "id": "rel-6",
+        "orderIndex": 5,
+        "sourceId": "concept-novo-conceito",
+        "linkingPhrase": "relaciona-se com",
+        "targetId": "concept-novo-conceito-6",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      }
+    },
+    "relationOrder": [
+      "rel-1",
+      "rel-2",
+      "rel-4",
+      "rel-5",
+      "rel-6"
+    ]
+  },
+  "visual": {
+    "nodes": {
+      "concept-conceito-principal": {
+        "conceptId": "concept-conceito-principal",
+        "position": {
+          "x": 400,
+          "y": 120
+        },
+        "dimensions": {
+          "width": 180,
+          "height": 48
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 0
+      },
+      "concept-novo-conceito": {
+        "conceptId": "concept-novo-conceito",
+        "position": {
+          "x": 168,
+          "y": 251
+        },
+        "dimensions": {
+          "width": 140,
+          "height": 48
+        },
+        "pinned": false,
+        "customSize": false,
+        "computedLayer": 1
+      },
+      "concept-novo-conceito-2": {
+        "conceptId": "concept-novo-conceito-2",
+        "position": {
+          "x": 383,
+          "y": 251
+        },
+        "dimensions": {
+          "width": 140,
+          "height": 48
+        },
+        "pinned": false,
+        "customSize": false,
+        "computedLayer": 1
+      },
+      "concept-novo-conceito-4": {
+        "conceptId": "concept-novo-conceito-4",
+        "position": {
+          "x": 60,
+          "y": 442
+        },
+        "dimensions": {
+          "width": 140,
+          "height": 48
+        },
+        "pinned": false,
+        "customSize": false,
+        "computedLayer": 2
+      },
+      "concept-novo-conceito-5": {
+        "conceptId": "concept-novo-conceito-5",
+        "position": {
+          "x": 60,
+          "y": 633
+        },
+        "dimensions": {
+          "width": 140,
+          "height": 48
+        },
+        "pinned": false,
+        "customSize": false,
+        "computedLayer": 3
+      },
+      "concept-novo-conceito-6": {
+        "conceptId": "concept-novo-conceito-6",
+        "position": {
+          "x": 275,
+          "y": 442
+        },
+        "dimensions": {
+          "width": 140,
+          "height": 48
+        },
+        "pinned": false,
+        "customSize": false,
+        "computedLayer": 2
+      }
+    },
+    "edges": {
+      "rel-1": {
+        "relationId": "rel-1",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-2": {
+        "relationId": "rel-2",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-4": {
+        "relationId": "rel-4",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-5": {
+        "relationId": "rel-5",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-6": {
+        "relationId": "rel-6",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "labelOffset": {
+          "t": 0.5
+        }
+      }
+    },
+    "viewport": {
+      "x": 365.65365357497143,
+      "y": -110.27695500026664,
+      "zoom": 1.1630620721287692
+    },
+    "layoutSettings": {
+      "algorithm": "novak-backbone",
+      "direction": "TB",
+      "nodeSpacingX": 75,
+      "nodeSpacingY": 110,
+      "layerSpacing": 115,
+      "respectPinnedNodes": true
+    },
+    "crossLinkVisibility": "all"
+  },
+  "parseDiagnostics": []
+}

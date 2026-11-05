@@ -180,7 +180,9 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
           value={draftLabel}
           onChange={(e) => setDraftLabel(e.target.value)}
           onBlur={commitEdit}
+          onKeyUp={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
+            e.stopPropagation();
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               commitEdit();
@@ -191,7 +193,7 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
             }
           }}
           rows={2}
-          className="nodrag nowheel w-full resize-none rounded border border-blue-400 bg-white px-1.5 py-0.5 text-center text-xs font-semibold text-slate-900 focus:outline-none"
+          className="nodrag nopan nowheel w-full resize-none rounded border border-blue-400 bg-white px-1.5 py-0.5 text-center text-xs font-semibold text-slate-900 focus:outline-none"
         />
       ) : (
         <span className="select-none break-words text-[13px] leading-snug">

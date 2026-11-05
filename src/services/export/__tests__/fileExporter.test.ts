@@ -112,4 +112,46 @@ describe('FileExporter & Persistência Completa (Etapas 6 e 7)', () => {
     expect(reparsed.metrics.totalConcepts).toBe(33);
     expect(reparsed.metrics.totalRelations).toBe(47);
   });
+
+  it('evita sobreposição de rótulos de conexões irmãs ao exportar debug/novo-mapa.cmap.json para SVG', () => {
+    const debugJsonPath = path.resolve(
+      __dirname,
+      '../../../../debug/novo-mapa.cmap.json'
+    );
+    const rawJson = fs.readFileSync(debugJsonPath, 'utf-8');
+    const doc = parseAndValidateJsonDocument(rawJson);
+
+    const svg = generateStandaloneVectorSvg(doc.semantic, doc.visual);
+
+    // Extrai todas as caixas <rect> dos rótulos de aresta (.edge-label)
+    const labelRectRegex =
+      /<g class="edge-label"[^>]*>\s*<rect x="([^"]+)" y="([^"]+)" width="([^"]+)" height="([^"]+)"/g;
+    const rects: Array<{ x: number; y: number; width: number; height: number }> =
+      [];
+    let match: RegExpExecArray | null;
+    while ((match = labelRectRegex.exec(svg)) !== null) {
+      rects.push({
+        x: parseFloat(match[1]),
+        y: parseFloat(match[2]),
+        width: parseFloat(match[3]),
+        height: parseFloat(match[4]),
+      });
+    }
+
+    expect(rects).toHaveLength(5);
+
+    // Verifica que nenhum par de rótulos de conexão se sobrepõe no SVG exportado
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        const overlapsHorizontally =
+          a.x < b.x + b.width && a.x + a.width > b.x;
+        const overlapsVertically =
+          a.y < b.y + b.height && a.y + a.height > b.y;
+        expect(overlapsHorizontally && overlapsVertically).toBe(false);
+      }
+    }
+  });
 });
+
