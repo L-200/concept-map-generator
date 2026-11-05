@@ -13,12 +13,12 @@ import {
 } from '../fileExporter';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const entradaPath = path.resolve(__dirname, '../../../../entrada.md');
-const rawMarkdown = fs.readFileSync(entradaPath, 'utf-8');
+const exemploPath = path.resolve(__dirname, '../../../../exemplo.md');
+const rawMarkdown = fs.readFileSync(exemploPath, 'utf-8');
 
 describe('FileExporter & Persistência Completa (Etapas 6 e 7)', () => {
   beforeEach(async () => {
-    await useConceptMapStore.getState().loadFromMarkdown(rawMarkdown, 'entrada.md');
+    await useConceptMapStore.getState().loadFromMarkdown(rawMarkdown, 'exemplo.md');
   });
 
   it('salva e reabre projeto JSON (.cmap.json) preservando 100% dos dados semânticos, posições manuais e pinos', () => {

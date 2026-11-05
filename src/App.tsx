@@ -7,16 +7,13 @@ import { PropositionsDrawer } from './components/modals/PropositionsDrawer';
 import { TopToolbar } from './components/toolbar/TopToolbar';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { parseAndValidateJsonDocument } from './services/export/fileExporter';
-import { fetchDefaultWorkspaceInput } from './services/workspaceBridge';
 import { useConceptMapStore } from './store/useConceptMapStore';
 
 export default function App() {
   const metrics = useConceptMapStore((s) => s.metrics);
+  const createNewEmptyMap = useConceptMapStore((s) => s.createNewEmptyMap);
   const loadFromMarkdown = useConceptMapStore((s) => s.loadFromMarkdown);
   const loadFromDocument = useConceptMapStore((s) => s.loadFromDocument);
-  const restoreDraftFromLocalStorage = useConceptMapStore(
-    (s) => s.restoreDraftFromLocalStorage
-  );
 
   const [isTableDrawerOpen, setIsTableDrawerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,27 +26,9 @@ export default function App() {
   useKeyboardShortcuts({ searchInputRef });
 
   useEffect(() => {
-    // Tenta restaurar sessão anterior salva no navegador; se não houver, carrega entrada.md do workspace
-    const restored = restoreDraftFromLocalStorage();
-    const state = useConceptMapStore.getState();
-    if (
-      restored &&
-      (state.metrics.totalConcepts > 0 ||
-        state.sourceFileName === 'novo-mapa.md')
-    ) {
-      return;
-    }
-
-    fetchDefaultWorkspaceInput()
-      .then((payload) => {
-        return loadFromMarkdown(payload.content, payload.fileName);
-      })
-      .catch((err: unknown) => {
-        setError(
-          err instanceof Error ? err.message : 'Erro ao carregar entrada.md'
-        );
-      });
-  }, [loadFromMarkdown, restoreDraftFromLocalStorage]);
+    // Abre a aplicação diretamente em um mapa totalmente em branco
+    createNewEmptyMap(false);
+  }, [createNewEmptyMap]);
 
   const isFileDragEvent = (e: React.DragEvent<HTMLDivElement>): boolean => {
     return Array.from(e.dataTransfer.types).includes('Files');

@@ -9,11 +9,11 @@ import {
 import { serializeSemanticModelToMarkdown } from '../markdownSerializer';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const entradaPath = path.resolve(__dirname, '../../../../entrada.md');
+const exemploPath = path.resolve(__dirname, '../../../../exemplo.md');
 
 describe('MarkdownParser & MarkdownSerializer (Etapa 2)', () => {
-  it('extrai exatamente 32 conceitos únicos e 46 relações (31 hierárquicas e 15 cruzadas) de entrada.md', () => {
-    const rawMarkdown = fs.readFileSync(entradaPath, 'utf-8');
+  it('extrai exatamente 32 conceitos únicos e 46 relações (31 hierárquicas e 15 cruzadas) de exemplo.md', () => {
+    const rawMarkdown = fs.readFileSync(exemploPath, 'utf-8');
     const result = parseConceptMapMarkdown(rawMarkdown);
 
     expect(result.diagnostics).toHaveLength(0);
@@ -39,14 +39,14 @@ describe('MarkdownParser & MarkdownSerializer (Etapa 2)', () => {
     expect(result.metrics.hasDirectedCycles).toBe(false);
   });
 
-  it('realiza round-trip perfeito de entrada.md (parse -> serialize 5 colunas -> re-parse)', () => {
-    const rawMarkdown = fs.readFileSync(entradaPath, 'utf-8');
+  it('realiza round-trip perfeito de exemplo.md (parse -> serialize 5 colunas -> re-parse)', () => {
+    const rawMarkdown = fs.readFileSync(exemploPath, 'utf-8');
     const firstPass = parseConceptMapMarkdown(rawMarkdown);
     const serialized = serializeSemanticModelToMarkdown(firstPass.semantic, {
       includeIndexColumn: true,
     });
 
-    // O Markdown serializado de 5 colunas deve bater exatamente com o entrada.md original
+    // O Markdown serializado de 5 colunas deve bater exatamente com o exemplo.md original
     expect(serialized).toBe(rawMarkdown);
 
     const secondPass = parseConceptMapMarkdown(serialized);

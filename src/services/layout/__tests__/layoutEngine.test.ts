@@ -10,10 +10,10 @@ import {
 } from '../layoutEngine';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const entradaPath = path.resolve(__dirname, '../../../../entrada.md');
+const exemploPath = path.resolve(__dirname, '../../../../exemplo.md');
 
 describe('LayoutEngine (Etapa 3)', () => {
-  const rawMarkdown = fs.readFileSync(entradaPath, 'utf-8');
+  const rawMarkdown = fs.readFileSync(exemploPath, 'utf-8');
   const parsed = parseConceptMapMarkdown(rawMarkdown);
 
   const algorithms: LayoutAlgorithmType[] = [
@@ -25,7 +25,7 @@ describe('LayoutEngine (Etapa 3)', () => {
   ];
 
   it.each(algorithms)(
-    'calcula coordenadas finitas e sem sobreposição de nós no algoritmo %s para entrada.md',
+    'calcula coordenadas finitas e sem sobreposição de nós no algoritmo %s para exemplo.md',
     async (algorithm) => {
       const result = await computeConceptMapLayout(parsed.semantic, undefined, {
         algorithm,

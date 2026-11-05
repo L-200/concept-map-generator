@@ -4,7 +4,7 @@ export interface DefaultInputPayload {
 }
 
 /**
- * Busca o arquivo `entrada.md` diretamente do diretório do projeto
+ * Busca o arquivo `exemplo.md` diretamente do diretório do projeto
  * através do endpoint local `/api/default-input` exposto pelo servidor Vite.
  */
 export async function fetchDefaultWorkspaceInput(): Promise<DefaultInputPayload> {
@@ -15,7 +15,7 @@ export async function fetchDefaultWorkspaceInput(): Promise<DefaultInputPayload>
   });
 
   if (!response.ok) {
-    let errorMessage = `Falha ao carregar entrada.md (HTTP ${response.status})`;
+    let errorMessage = `Falha ao carregar exemplo.md (HTTP ${response.status})`;
     try {
       const errorData = (await response.json()) as { error?: string };
       if (errorData?.error) {

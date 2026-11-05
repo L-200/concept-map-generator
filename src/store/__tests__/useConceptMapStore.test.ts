@@ -5,15 +5,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { useConceptMapStore } from '../useConceptMapStore';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const entradaPath = path.resolve(__dirname, '../../../entrada.md');
-const rawMarkdown = fs.readFileSync(entradaPath, 'utf-8');
+const exemploPath = path.resolve(__dirname, '../../../exemplo.md');
+const rawMarkdown = fs.readFileSync(exemploPath, 'utf-8');
 
 describe('useConceptMapStore & Undo/Redo (Etapa 4)', () => {
   beforeEach(async () => {
-    await useConceptMapStore.getState().loadFromMarkdown(rawMarkdown, 'entrada.md');
+    await useConceptMapStore.getState().loadFromMarkdown(rawMarkdown, 'exemplo.md');
   });
 
-  it('carrega entrada.md e inicializa 32 nós e 46 arestas no estado semântico e visual', () => {
+  it('carrega exemplo.md e inicializa 32 nós e 46 arestas no estado semântico e visual', () => {
     const state = useConceptMapStore.getState();
     expect(state.metrics.totalConcepts).toBe(32);
     expect(state.metrics.totalRelations).toBe(46);

@@ -222,7 +222,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
       visual: EMPTY_VISUAL,
       metrics: computeSemanticGraphMetrics(EMPTY_SEMANTIC),
       diagnostics: [],
-      sourceFileName: 'entrada.md',
+      sourceFileName: 'novo-mapa.md',
       hasUnsavedChanges: false,
       lastSavedAt: null,
       isLayoutRunning: false,
@@ -303,7 +303,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
         useConceptMapStore.temporal.getState().clear();
       },
 
-      loadFromMarkdown: async (markdownContent: string, fileName = 'entrada.md') => {
+      loadFromMarkdown: async (markdownContent: string, fileName = 'exemplo.md') => {
         set({ isLayoutRunning: true });
         const parsed = parseConceptMapMarkdown(markdownContent);
         const layoutResult = await computeConceptMapLayout(parsed.semantic);

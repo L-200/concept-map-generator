@@ -543,11 +543,11 @@ export function TopToolbar({
           onClick={() => {
             fetchDefaultWorkspaceInput().then((p) => {
               loadFromMarkdown(p.content, p.fileName);
-              showToast('entrada.md recarregado do workspace.');
+              showToast('exemplo.md carregado do workspace.');
             });
           }}
           className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50"
-          title="Recarregar entrada.md original do disco"
+          title="Carregar exemplo.md do disco"
         >
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
@@ -607,7 +607,7 @@ export function TopToolbar({
                       Exportar Markdown (.md)
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      Tabela de 5 colunas compatível com entrada.md
+                      Tabela de 5 colunas compatível com exemplo.md
                     </div>
                   </div>
                 </button>

@@ -588,7 +588,7 @@ export function ConceptMapCanvas() {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
               >
                 <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
-                Carregar Mapa de Exemplo (entrada.md)
+                Carregar Mapa de Exemplo (exemplo.md)
               </button>
             </div>
 

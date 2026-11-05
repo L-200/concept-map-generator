@@ -7,8 +7,8 @@ import react from '@vitejs/plugin-react';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Plugin do servidor Vite que expõe a leitura de `entrada.md` diretamente
- * do diretório do projeto no Linux, sem exigir upload manual inicial.
+ * Plugin do servidor Vite que expõe a leitura de `exemplo.md` diretamente
+ * do diretório do projeto no Linux, quando solicitado pelo usuário.
  */
 function workspaceBridgePlugin(): Plugin {
   return {
@@ -21,20 +21,20 @@ function workspaceBridgePlugin(): Plugin {
           return;
         }
 
-        const entradaPath = path.resolve(__dirname, 'entrada.md');
+        const exemploPath = path.resolve(__dirname, 'exemplo.md');
         try {
-          if (!fs.existsSync(entradaPath)) {
+          if (!fs.existsSync(exemploPath)) {
             res.statusCode = 404;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            res.end(JSON.stringify({ error: 'Arquivo entrada.md não encontrado no diretório.' }));
+            res.end(JSON.stringify({ error: 'Arquivo exemplo.md não encontrado no diretório.' }));
             return;
           }
-          const content = fs.readFileSync(entradaPath, 'utf-8');
+          const content = fs.readFileSync(exemploPath, 'utf-8');
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(
             JSON.stringify({
-              fileName: 'entrada.md',
+              fileName: 'exemplo.md',
               content,
             })
           );
@@ -43,7 +43,7 @@ function workspaceBridgePlugin(): Plugin {
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(
             JSON.stringify({
-              error: err instanceof Error ? err.message : 'Erro ao ler entrada.md',
+              error: err instanceof Error ? err.message : 'Erro ao ler exemplo.md',
             })
           );
         }
