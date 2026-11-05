@@ -10,6 +10,8 @@ import {
   useReactFlow,
   type Connection,
   type Edge,
+  type EdgeChange,
+  type Node,
   type NodeChange,
   type OnMoveEnd,
   type OnNodeDrag,
@@ -37,7 +39,9 @@ const edgeTypes = {
   proposition: PropositionEdge,
 };
 
-function sanitizeHandle(handleId: string | null | undefined): HandlePosition | undefined {
+function sanitizeHandle(
+  handleId: string | null | undefined
+): HandlePosition | undefined {
   if (
     handleId === 'top' ||
     handleId === 'right' ||
@@ -47,6 +51,13 @@ function sanitizeHandle(handleId: string | null | undefined): HandlePosition | u
     return handleId;
   }
   return undefined;
+}
+
+function miniMapNodeColor(node: Node): string {
+  const data = node.data as ConceptFlowNode['data'] | undefined;
+  if (data?.isRoot) return '#2563eb';
+  if (data?.pinned) return '#f59e0b';
+  return '#64748b';
 }
 
 export function ConceptMapCanvas() {
@@ -125,6 +136,9 @@ export function ConceptMapCanvas() {
         if (!concept || !nodeVis) return null;
 
         const pos = liveDragPositions[conceptId] ?? nodeVis.position;
+        const width = nodeVis.dimensions?.width ?? 180;
+        const height = nodeVis.dimensions?.height ?? 52;
+
         const isSearchMatch =
           normalizedQuery.length > 0 &&
           concept.label.toLowerCase().includes(normalizedQuery);
@@ -138,13 +152,13 @@ export function ConceptMapCanvas() {
           id: conceptId,
           type: 'concept' as const,
           position: pos,
+          width,
+          height,
           selected: selectedSet.has(conceptId),
-          style: nodeVis.dimensions
-            ? {
-                width: nodeVis.dimensions.width,
-                height: nodeVis.dimensions.height,
-              }
-            : undefined,
+          style: {
+            width,
+            height,
+          },
           data: {
             conceptId,
             label: concept.label,
@@ -276,22 +290,70 @@ export function ConceptMapCanvas() {
     normalizedQuery,
   ]);
 
-  // Atualiza posições locais durante arraste contínuo
-  const handleNodesChange = useCallback((changes: NodeChange<ConceptFlowNode>[]) => {
-    const nextDrag: Record<ConceptId, Point2D> = {};
-    let hasPositionChange = false;
+  // Atualiza posições locais durante arraste contínuo e seleção de nós
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<ConceptFlowNode>[]) => {
+      const nextDrag: Record<ConceptId, Point2D> = {};
+      let hasPositionChange = false;
+      let selectionChanged = false;
+      const currentSelectedNodes = new Set(
+        useConceptMapStore.getState().selectedNodeIds
+      );
 
-    for (const change of changes) {
-      if (change.type === 'position' && change.position) {
-        nextDrag[change.id] = change.position;
-        hasPositionChange = true;
+      for (const change of changes) {
+        if (change.type === 'position' && change.position) {
+          nextDrag[change.id] = change.position;
+          hasPositionChange = true;
+        } else if (change.type === 'select') {
+          selectionChanged = true;
+          if (change.selected) {
+            currentSelectedNodes.add(change.id);
+          } else {
+            currentSelectedNodes.delete(change.id);
+          }
+        }
       }
-    }
 
-    if (hasPositionChange) {
-      setLiveDragPositions((prev) => ({ ...prev, ...nextDrag }));
-    }
-  }, []);
+      if (hasPositionChange) {
+        setLiveDragPositions((prev) => ({ ...prev, ...nextDrag }));
+      }
+
+      if (selectionChanged) {
+        const currentSelectedEdges =
+          useConceptMapStore.getState().selectedEdgeIds;
+        setSelection(Array.from(currentSelectedNodes), currentSelectedEdges);
+      }
+    },
+    [setSelection]
+  );
+
+  // Atualiza seleção de arestas
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange<PropositionFlowEdge>[]) => {
+      let selectionChanged = false;
+      const currentSelectedEdges = new Set(
+        useConceptMapStore.getState().selectedEdgeIds
+      );
+
+      for (const change of changes) {
+        if (change.type === 'select') {
+          selectionChanged = true;
+          if (change.selected) {
+            currentSelectedEdges.add(change.id);
+          } else {
+            currentSelectedEdges.delete(change.id);
+          }
+        }
+      }
+
+      if (selectionChanged) {
+        const currentSelectedNodes =
+          useConceptMapStore.getState().selectedNodeIds;
+        setSelection(currentSelectedNodes, Array.from(currentSelectedEdges));
+      }
+    },
+    [setSelection]
+  );
 
   // Consolida o movimento na store ao soltar o botão do mouse (1 entrada de Undo + pinned=true)
   const handleNodeDragStop: OnNodeDrag<ConceptFlowNode> = useCallback(
@@ -341,9 +403,12 @@ export function ConceptMapCanvas() {
     [setViewport]
   );
 
+  const handlePaneClick = useCallback(() => {
+    setSelection([], []);
+  }, [setSelection]);
+
   const pinnedCount = useMemo(
-    () =>
-      Object.values(visual.nodes).filter((n) => n.pinned).length,
+    () => Object.values(visual.nodes).filter((n) => n.pinned).length,
     [visual.nodes]
   );
 
@@ -371,16 +436,12 @@ export function ConceptMapCanvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
         onNodeDragStop={handleNodeDragStop}
         onConnect={handleConnect}
         onReconnect={handleReconnect}
         onMoveEnd={handleMoveEnd}
-        onSelectionChange={({ nodes, edges }) => {
-          setSelection(
-            nodes.map((n) => n.id),
-            edges.map((e) => e.id)
-          );
-        }}
+        onPaneClick={handlePaneClick}
         connectionMode={ConnectionMode.Loose}
         selectionOnDrag
         panOnDrag={[1, 2]}
@@ -409,12 +470,7 @@ export function ConceptMapCanvas() {
           zoomable
           style={{ marginBottom: 48, marginRight: 48 }}
           className="!rounded-xl !border !border-slate-200 !bg-white/95 !shadow-md"
-          nodeColor={(node) => {
-            const data = node.data as ConceptFlowNode['data'];
-            if (data?.isRoot) return '#2563eb';
-            if (data?.pinned) return '#f59e0b';
-            return '#64748b';
-          }}
+          nodeColor={miniMapNodeColor}
         />
       </ReactFlow>
 

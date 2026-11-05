@@ -1082,6 +1082,18 @@ export const useConceptMapStore = create<ConceptMapState>()(
       },
 
       setSelection: (nodeIds: ConceptId[], edgeIds: RelationId[]) => {
+        const state = get();
+        const sameNodes =
+          state.selectedNodeIds.length === nodeIds.length &&
+          state.selectedNodeIds.every((id, idx) => id === nodeIds[idx]);
+        const sameEdges =
+          state.selectedEdgeIds.length === edgeIds.length &&
+          state.selectedEdgeIds.every((id, idx) => id === edgeIds[idx]);
+
+        if (sameNodes && sameEdges) {
+          return;
+        }
+
         set({
           selectedNodeIds: nodeIds,
           selectedEdgeIds: edgeIds,
@@ -1089,6 +1101,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
       },
 
       setHoveredNodeId: (nodeId: ConceptId | null) => {
+        if (get().hoveredNodeId === nodeId) return;
         set({ hoveredNodeId: nodeId });
       },
 

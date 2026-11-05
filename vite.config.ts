@@ -58,4 +58,16 @@ export default defineConfig({
     port: 5173,
     strictPort: false,
   },
+  build: {
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          xyflow: ['@xyflow/react'],
+          layout: ['@dagrejs/dagre', 'd3-force'],
+          elk: ['elkjs/lib/elk.bundled.js'],
+        },
+      },
+    },
+  },
 });
