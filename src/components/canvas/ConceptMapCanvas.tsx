@@ -20,7 +20,16 @@ import {
   type OnReconnect,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Eye, FileUp, PinOff, Plus, RefreshCw, Sparkles } from 'lucide-react';
+import {
+  Eye,
+  FileUp,
+  Network,
+  PinOff,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Workflow,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ConceptId,
@@ -29,7 +38,10 @@ import type {
   Point2D,
   RelationId,
 } from '../../domain/types';
-import { fetchDefaultWorkspaceInput } from '../../services/workspaceBridge';
+import {
+  fetchDefaultWorkspaceInput,
+  fetchFlowchartWorkspaceInput,
+} from '../../services/workspaceBridge';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 import { ConceptNode, type ConceptFlowNode } from './ConceptNode';
 import { PropositionEdge, type PropositionFlowEdge } from './PropositionEdge';
@@ -75,9 +87,6 @@ export function ConceptMapCanvas() {
   const moveNodes = useConceptMapStore((s) => s.moveNodes);
   const addConcept = useConceptMapStore((s) => s.addConcept);
   const addConnectedConcept = useConceptMapStore((s) => s.addConnectedConcept);
-  const addPropositionByNames = useConceptMapStore(
-    (s) => s.addPropositionByNames
-  );
   const createNewEmptyMap = useConceptMapStore((s) => s.createNewEmptyMap);
   const loadFromMarkdown = useConceptMapStore((s) => s.loadFromMarkdown);
   const addRelation = useConceptMapStore((s) => s.addRelation);
@@ -136,11 +145,13 @@ export function ConceptMapCanvas() {
   }, [hoveredNodeId, semantic.relationOrder, semantic.relations]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const isFlowchart = semantic.diagramMode === 'flowchart';
 
   // Constrói lista de nós para o React Flow
   const flowNodes: ConceptFlowNode[] = useMemo(() => {
     const selectedSet = new Set(selectedNodeIds);
     const rootSet = new Set(metrics.rootConceptIds);
+    const isCurrentFlowchart = semantic.diagramMode === 'flowchart';
 
     return semantic.conceptOrder
       .map((conceptId) => {
@@ -182,6 +193,11 @@ export function ConceptMapCanvas() {
             isDimmed,
             isSearchMatch,
             customStyle: nodeVis.style,
+            nodeShape:
+              nodeVis.nodeShape ??
+              concept.nodeShape ??
+              (isCurrentFlowchart ? 'process' : 'concept'),
+            diagramMode: semantic.diagramMode ?? 'concept-map',
           },
         };
       })
@@ -189,6 +205,7 @@ export function ConceptMapCanvas() {
   }, [
     semantic.conceptOrder,
     semantic.concepts,
+    semantic.diagramMode,
     visual.nodes,
     liveDragPositions,
     selectedNodeIds,
@@ -201,6 +218,7 @@ export function ConceptMapCanvas() {
   const flowEdges: PropositionFlowEdge[] = useMemo(() => {
     const selectedSet = new Set(selectedEdgeIds);
     const pairCounts: Record<string, RelationId[]> = {};
+    const isCurrentFlowchart = semantic.diagramMode === 'flowchart';
 
     for (const relId of semantic.relationOrder) {
       const rel = semantic.relations[relId];
@@ -251,11 +269,32 @@ export function ConceptMapCanvas() {
           isDimmed = true;
         }
 
+        // Cor da ponta da seta adaptada a condições Sim / Não em fluxograma
+        const phraseNorm = rel.linkingPhrase.trim().toLowerCase();
+        const isSim =
+          isCurrentFlowchart &&
+          (phraseNorm === 'sim' ||
+            phraseNorm === 'true' ||
+            phraseNorm === 'v' ||
+            phraseNorm === 's' ||
+            phraseNorm === 'yes');
+        const isNao =
+          isCurrentFlowchart &&
+          (phraseNorm === 'não' ||
+            phraseNorm === 'nao' ||
+            phraseNorm === 'false' ||
+            phraseNorm === 'f' ||
+            phraseNorm === 'no');
+
         const arrowColor = isSelected
           ? '#2563eb'
-          : isCross
-            ? '#d97706'
-            : '#475569';
+          : isSim
+            ? '#059669'
+            : isNao
+              ? '#e11d48'
+              : isCross
+                ? '#d97706'
+                : '#475569';
 
         return {
           id: relId,
@@ -289,6 +328,8 @@ export function ConceptMapCanvas() {
             isDimmed,
             isHidden,
             isSearchMatch,
+            flowKind: rel.flowKind,
+            diagramMode: semantic.diagramMode ?? 'concept-map',
           },
         };
       })
@@ -296,6 +337,7 @@ export function ConceptMapCanvas() {
   }, [
     semantic.relationOrder,
     semantic.relations,
+    semantic.diagramMode,
     visual.edges,
     visual.crossLinkVisibility,
     selectedEdgeIds,
@@ -390,18 +432,19 @@ export function ConceptMapCanvas() {
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
       didConnectToExistingNodeRef.current = true;
+      const isFlow = semantic.diagramMode === 'flowchart';
       addRelation(
         connection.source,
         connection.target,
-        'relaciona-se com',
-        'hierarchical',
+        isFlow ? '' : 'relaciona-se com',
+        isFlow ? 'sequence' : 'hierarchical',
         {
           sourceHandle: sanitizeHandle(connection.sourceHandle),
           targetHandle: sanitizeHandle(connection.targetHandle),
         }
       );
     },
-    [addRelation]
+    [addRelation, semantic.diagramMode]
   );
 
   const handleConnectEnd: OnConnectEnd = useCallback(
@@ -428,18 +471,20 @@ export function ConceptMapCanvas() {
           : event.clientY;
 
       const flowPos = screenToFlowPosition({ x: clientX, y: clientY });
+      const isFlow = semantic.diagramMode === 'flowchart';
       addConnectedConcept(
         sourceNodeId,
-        'Novo Conceito',
-        'relaciona-se com',
-        'hierarchical',
+        isFlow ? 'Nova Etapa' : 'Novo Conceito',
+        isFlow ? '' : 'relaciona-se com',
+        isFlow ? 'sequence' : 'hierarchical',
         {
           x: Math.round(flowPos.x - 80),
           y: Math.round(flowPos.y - 25),
-        }
+        },
+        isFlow ? 'process' : 'concept'
       );
     },
-    [addConnectedConcept, screenToFlowPosition]
+    [addConnectedConcept, screenToFlowPosition, semantic.diagramMode]
   );
 
   const handleReconnect: OnReconnect = useCallback(
@@ -470,22 +515,34 @@ export function ConceptMapCanvas() {
   );
 
   const isEmptyMap = semantic.conceptOrder.length === 0;
+  const [isWelcomeDismissed, setIsWelcomeDismissed] = useState(false);
+
+  useEffect(() => {
+    if (semantic.conceptOrder.length === 0) {
+      setIsWelcomeDismissed(false);
+    }
+  }, [semantic]);
 
   return (
     <div
       className="relative h-full w-full flex-1 bg-slate-50"
       onDoubleClick={(e) => {
-        // Duplo clique no fundo do canvas cria um novo conceito naquela posição
+        // Duplo clique no fundo do canvas cria um novo conceito/etapa naquela posição
         const target = e.target as HTMLElement;
         if (target.classList.contains('react-flow__pane')) {
           const flowPos = screenToFlowPosition({
             x: e.clientX,
             y: e.clientY,
           });
-          addConcept('Novo Conceito', {
-            x: Math.round(flowPos.x - 80),
-            y: Math.round(flowPos.y - 25),
-          });
+          const isFlow = semantic.diagramMode === 'flowchart';
+          addConcept(
+            isFlow ? 'Nova Etapa' : 'Novo Conceito',
+            {
+              x: Math.round(flowPos.x - 80),
+              y: Math.round(flowPos.y - 25),
+            },
+            isFlow ? 'process' : 'concept'
+          );
         }
       }}
     >
@@ -537,78 +594,136 @@ export function ConceptMapCanvas() {
       </ReactFlow>
 
       {/* Painel de Boas-vindas / Criação Manual quando o Mapa está Vazio */}
-      {isEmptyMap && (
-        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4">
-          <div className="pointer-events-auto flex w-full max-w-md flex-col items-center rounded-2xl border border-slate-200 bg-white/95 p-6 text-center shadow-xl backdrop-blur">
-            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
+      {isEmptyMap && !isWelcomeDismissed && (
+        <div
+          data-testid="welcome-panel"
+          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4"
+        >
+          <div className="pointer-events-auto flex w-full max-w-2xl flex-col items-center rounded-2xl border border-slate-200/90 bg-white/95 p-6 shadow-2xl backdrop-blur">
+            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-xs">
               <Sparkles className="h-6 w-6" />
             </div>
             <h2 className="text-base font-bold text-slate-900">
-              Comece seu Mapa Conceitual
+              Comece seu Mapa Conceitual ou Fluxograma
             </h2>
-            <p className="mt-1 text-xs leading-relaxed text-slate-600">
-              Crie blocos e ligações livremente ou arraste um arquivo{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-800">
-                .md
-              </code>{' '}
-              diretamente para qualquer lugar da tela.
+            <p className="mt-1 max-w-lg text-center text-xs leading-relaxed text-slate-600">
+              Crie diagramas estruturados a partir de modelos iniciais ou explore exemplos interativos prontos para edição.
             </p>
 
-            <div className="mt-5 flex w-full flex-col gap-2">
-              <button
-                type="button"
-                onClick={() => createNewEmptyMap(true)}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs transition hover:bg-blue-700"
-              >
-                <Plus className="h-4 w-4" />
-                Criar Primeiro Bloco (Conceito Principal)
-              </button>
+            {/* Grade de Vias Duplas (Dual Pathways) */}
+            <div className="mt-5 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
+              {/* Via 1: Mapa Conceitual (Novak) */}
+              <div className="flex flex-col justify-between rounded-xl border border-blue-100 bg-gradient-to-b from-blue-50/50 to-white p-4 shadow-xs">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-900">
+                      <Network className="h-4 w-4 text-blue-600" />
+                      Mapa Conceitual
+                    </span>
+                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                      Novak
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
+                    Estrutura hierárquica baseada em proposições explícitas (Conceito A → Frase de Ligação → Conceito B).
+                  </p>
+                </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  addPropositionByNames(
-                    'Conceito Principal',
-                    'divide-se em',
-                    'Subconceito 1',
-                    'hierarchical'
-                  );
-                }}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50/70 px-4 py-2 text-xs font-semibold text-blue-800 transition hover:bg-blue-100"
-              >
-                Criar Proposição Inicial (Bloco A → Frase → Bloco B)
-              </button>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    data-testid="create-concept-map-btn"
+                    onClick={() => createNewEmptyMap(true, 'concept-map')}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-blue-700"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Iniciar Mapa Conceitual
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="load-concept-map-example-btn"
+                    onClick={() => {
+                      fetchDefaultWorkspaceInput().then((p) => {
+                        loadFromMarkdown(p.content, p.fileName);
+                      });
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3.5 py-1.5 text-xs font-medium text-blue-800 transition hover:bg-blue-50"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 text-blue-600" />
+                    Carregar exemplo.md
+                  </button>
+                </div>
+              </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  fetchDefaultWorkspaceInput().then((p) => {
-                    loadFromMarkdown(p.content, p.fileName);
-                  });
-                }}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
-                Carregar Mapa de Exemplo (exemplo.md)
-              </button>
+              {/* Via 2: Fluxograma de Processos */}
+              <div className="flex flex-col justify-between rounded-xl border border-indigo-100 bg-gradient-to-b from-indigo-50/50 to-white p-4 shadow-xs">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-900">
+                      <Workflow className="h-4 w-4 text-indigo-600" />
+                      Fluxograma
+                    </span>
+                    <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
+                      Processos
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
+                    Fluxos de trabalho com blocos de início/fim, tarefas, desvios condicionais (Sim/Não) e rotinas.
+                  </p>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    data-testid="create-flowchart-btn"
+                    onClick={() => createNewEmptyMap(true, 'flowchart')}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-700"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Iniciar Fluxograma
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="load-flowchart-example-btn"
+                    onClick={() => {
+                      fetchFlowchartWorkspaceInput().then((p) => {
+                        loadFromMarkdown(p.content, p.fileName);
+                      });
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-3.5 py-1.5 text-xs font-medium text-indigo-800 transition hover:bg-indigo-50"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 text-indigo-600" />
+                    Carregar exemplo-fluxograma.md
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-400">
-              <FileUp className="h-3.5 w-3.5" />
-              <span>
-                Dica: dê <strong>duplo clique</strong> no fundo para criar um
-                bloco onde quiser
-              </span>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 w-full text-[11px] text-slate-400">
+              <div className="flex items-center gap-1.5">
+                <FileUp className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Arraste um arquivo <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[10.5px] text-slate-700">.md</code> ou dê <strong>duplo clique</strong> no fundo para criar.
+                </span>
+              </div>
+              <button
+                type="button"
+                data-testid="dismiss-welcome-panel-btn"
+                onClick={() => setIsWelcomeDismissed(true)}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+              >
+                Usar canvas vazio (sem blocos)
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Legenda Interativa & Filtro de Ligações Cruzadas (Canto Inferior Esquerdo) */}
+      {/* Legenda Interativa & Filtro (Canto Inferior Esquerdo) */}
       <div className="pointer-events-auto absolute bottom-4 left-4 z-20 flex flex-col gap-2 rounded-xl border border-slate-200/90 bg-white/95 p-3 text-xs shadow-lg backdrop-blur">
         <div className="flex items-center justify-between gap-4 border-b border-slate-100 pb-1.5">
           <span className="font-semibold text-slate-700">
-            Legenda & Relações
+            {isFlowchart ? 'Legenda do Fluxograma' : 'Legenda & Relações'}
           </span>
           <span className="text-[11px] text-slate-500">
             {metrics.totalConcepts} nós • {metrics.totalRelations} conexões
@@ -616,47 +731,87 @@ export function ConceptMapCanvas() {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-0.5 w-6 bg-slate-600" />
-              <span className="font-medium text-slate-700">Hierárquica</span>
-            </div>
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-              {metrics.hierarchicalCount}
-            </span>
-          </div>
+          {isFlowchart ? (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-0.5 w-6 bg-slate-600" />
+                  <span className="font-medium text-slate-700">Sequencial</span>
+                </div>
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                  {metrics.sequenceCount ?? metrics.hierarchicalCount}
+                </span>
+              </div>
 
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-0.5 w-6 border-b-2 border-dashed border-amber-600" />
-              <span className="font-medium text-amber-800">Ligação Cruzada</span>
-            </div>
-            <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-900">
-              {metrics.crossLinkCount}
-            </span>
-          </div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-0.5 w-6 bg-emerald-600" />
+                  <span className="font-medium text-emerald-800">Condicional</span>
+                </div>
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-mono text-[11px] text-emerald-900">
+                  {metrics.conditionalCount ?? 0}
+                </span>
+              </div>
+
+              {(metrics.loopBackCount ?? 0) > 0 && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-0.5 w-6 border-b-2 border-dashed border-amber-600" />
+                    <span className="font-medium text-amber-800">Retorno</span>
+                  </div>
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-900">
+                    {metrics.loopBackCount}
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-0.5 w-6 bg-slate-600" />
+                  <span className="font-medium text-slate-700">Hierárquica</span>
+                </div>
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                  {metrics.hierarchicalCount}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-0.5 w-6 border-b-2 border-dashed border-amber-600" />
+                  <span className="font-medium text-amber-800">Ligação Cruzada</span>
+                </div>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-900">
+                  {metrics.crossLinkCount}
+                </span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Seletor de Visibilidade de Ligações Cruzadas */}
-        <div className="mt-1 flex items-center gap-1.5 border-t border-slate-100 pt-2">
-          <Eye className="h-3.5 w-3.5 text-slate-500" />
-          <label htmlFor="crosslink-filter" className="text-slate-600">
-            Cruzadas:
-          </label>
-          <select
-            id="crosslink-filter"
-            value={visual.crossLinkVisibility}
-            onChange={(e) =>
-              setCrossLinkVisibility(e.target.value as CrossLinkVisibilityMode)
-            }
-            className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-800 focus:border-blue-500 focus:outline-none"
-          >
-            <option value="all">Mostrar todas</option>
-            <option value="hover-only">Atenuar (foco no hover)</option>
-            <option value="highlight-cross">Destacar cruzadas</option>
-            <option value="hide-cross">Ocultar cruzadas</option>
-          </select>
-        </div>
+        {!isFlowchart && (
+          <div className="mt-1 flex items-center gap-1.5 border-t border-slate-100 pt-2">
+            <Eye className="h-3.5 w-3.5 text-slate-500" />
+            <label htmlFor="crosslink-filter" className="text-slate-600">
+              Cruzadas:
+            </label>
+            <select
+              id="crosslink-filter"
+              value={visual.crossLinkVisibility}
+              onChange={(e) =>
+                setCrossLinkVisibility(e.target.value as CrossLinkVisibilityMode)
+              }
+              className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-800 focus:border-blue-500 focus:outline-none"
+            >
+              <option value="all">Mostrar todas</option>
+              <option value="hover-only">Atenuar (foco no hover)</option>
+              <option value="highlight-cross">Destacar cruzadas</option>
+              <option value="hide-cross">Ocultar cruzadas</option>
+            </select>
+          </div>
+        )}
 
         {/* Contador de Nós Fixados (Pinned) */}
         {pinnedCount > 0 && (

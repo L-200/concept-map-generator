@@ -2,6 +2,9 @@ import type {
   ConceptId,
   ConceptNodeSemantic,
   ConceptRelationSemantic,
+  DiagramMode,
+  FlowchartNodeShape,
+  FlowEdgeKind,
   ParseDiagnostic,
   ParseResult,
   RelationId,
@@ -11,8 +14,10 @@ import type {
 } from '../../domain/types';
 
 export interface MarkdownParserOptions {
-  /** Título padrão caso o Markdown não possua um heading `# Título` */
+  /** Título padrão caso o Markdown não possua um heading `# Título` ou frontmatter */
   defaultTitle?: string;
+  /** Forçar ou sugerir o modo do diagrama caso não esteja especificado no Markdown */
+  diagramMode?: DiagramMode;
 }
 
 interface ColumnMapping {
@@ -21,6 +26,7 @@ interface ColumnMapping {
   phraseCol: number;
   targetCol: number;
   typeCol?: number;
+  shapeCol?: number;
   expectedMinCols: number;
 }
 
@@ -106,7 +112,369 @@ export function isTableSeparatorLine(line: string): boolean {
 }
 
 /**
+ * Normaliza uma string de modo de diagrama para o tipo canônico DiagramMode.
+ */
+export function normalizeDiagramModeString(raw: string): DiagramMode | null {
+  const clean = stripAccents(raw.toLowerCase())
+    .trim()
+    .replace(/[_\s]+/g, '-');
+  if (['flowchart', 'fluxograma', 'fluxo', 'flow'].includes(clean)) {
+    return 'flowchart';
+  }
+  if (
+    [
+      'concept-map',
+      'conceptmap',
+      'mapa-conceitual',
+      'mapaconceitual',
+      'mapa-de-conceitos',
+      'novak',
+    ].includes(clean)
+  ) {
+    return 'concept-map';
+  }
+  return null;
+}
+
+export interface FrontmatterResult {
+  contentWithoutFrontmatter: string;
+  frontmatterMode?: DiagramMode;
+  frontmatterTitle?: string;
+}
+
+/**
+ * Extrai metadados do YAML frontmatter no topo do arquivo (se existente).
+ */
+export function extractFrontmatter(content: string): FrontmatterResult {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith('---')) {
+    return { contentWithoutFrontmatter: content };
+  }
+
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!match) {
+    return { contentWithoutFrontmatter: content };
+  }
+
+  const frontmatterBody = match[1];
+  const contentWithoutFrontmatter = content.slice(match[0].length);
+
+  let frontmatterMode: DiagramMode | undefined;
+  let frontmatterTitle: string | undefined;
+
+  const lines = frontmatterBody.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+
+    // Detecta type, diagram, mode, tipo
+    const modeMatch = trimmedLine.match(
+      /^(?:type|diagram|mode|tipo|tipo-de-diagrama|diagram-type)\s*:\s*["']?([^"'\r\n#]+)["']?/i
+    );
+    if (modeMatch && !frontmatterMode) {
+      const parsed = normalizeDiagramModeString(modeMatch[1]);
+      if (parsed) frontmatterMode = parsed;
+    }
+
+    // Detecta title, titulo, título
+    const titleMatch = trimmedLine.match(
+      /^(?:title|titulo|título)\s*:\s*["']?([^"'\r\n#]+)["']?/i
+    );
+    if (titleMatch && !frontmatterTitle) {
+      frontmatterTitle = titleMatch[1].trim();
+    }
+  }
+
+  return {
+    contentWithoutFrontmatter,
+    frontmatterMode,
+    frontmatterTitle,
+  };
+}
+
+/**
+ * Detecta diretivas de modo via comentários HTML ou anotações @type / Tipo de Diagrama.
+ */
+export function detectDirectiveMode(content: string): DiagramMode | null {
+  // 1. Comentário HTML: <!-- type: flowchart --> ou <!-- tipo: fluxograma -->
+  const commentMatch = content.match(
+    /<!--\s*(?:type|tipo|diagram|mode|modo|tipo\s+de\s+diagrama)\s*[:=]\s*([a-zA-Z0-9_-]+)\s*-->/i
+  );
+  if (commentMatch) {
+    const parsed = normalizeDiagramModeString(commentMatch[1]);
+    if (parsed) return parsed;
+  }
+
+  // 2. Diretivas de texto: @type: flowchart ou Tipo de Diagrama: Fluxograma
+  const directiveMatch = content.match(
+    /(?:@(?:type|tipo|diagram|mode|modo)|(?:tipo\s+de\s+diagrama))\s*[:=]\s*([a-zA-Z0-9_-]+)/i
+  );
+  if (directiveMatch) {
+    const parsed = normalizeDiagramModeString(directiveMatch[1]);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+/**
+ * Classificação heurística baseada no cabeçalho e conteúdo das células de tabela.
+ */
+export function detectHeuristicMode(tableLines: { raw: string }[]): DiagramMode {
+  const nonSeparatorLines = tableLines.filter((tl) => !isTableSeparatorLine(tl.raw));
+  if (nonSeparatorLines.length === 0) return 'concept-map';
+
+  // 1. Inspeciona a linha do cabeçalho
+  const firstRowCells = splitMarkdownTableRow(nonSeparatorLines[0].raw);
+  const normalizedHeader = firstRowCells.map((c) => stripAccents(c.toLowerCase()).trim());
+
+  const hasConceitoHeader = normalizedHeader.some(
+    (c) =>
+      c.includes('conceito a') ||
+      c.includes('conceito b') ||
+      c.includes('conceito 1') ||
+      c.includes('conceito 2')
+  );
+
+  const hasOrigem = normalizedHeader.some(
+    (c) => c === 'origem' || c.startsWith('origem ') || c === 'source' || c.endsWith(' origem')
+  );
+  const hasDestino = normalizedHeader.some(
+    (c) => c === 'destino' || c.startsWith('destino ') || c === 'target' || c.endsWith(' destino')
+  );
+  const hasFlowTerm = normalizedHeader.some(
+    (c) =>
+      c === 'transicao' ||
+      c === 'condicao' ||
+      c === 'forma' ||
+      c === 'shape' ||
+      c === 'tipo de no' ||
+      c === 'tipo do no' ||
+      c === 'transicao / condicao' ||
+      c === 'tipo / forma' ||
+      c.includes('transicao') ||
+      c.includes('condicao') ||
+      c.includes('forma') ||
+      c.includes('tipo de no')
+  );
+
+  if (
+    !hasConceitoHeader &&
+    ((hasOrigem && hasDestino) ||
+      (hasFlowTerm &&
+        (hasOrigem ||
+          hasDestino ||
+          normalizedHeader.some(
+            (c) => c.includes('forma') || c.includes('transicao') || c.includes('condicao')
+          ))))
+  ) {
+    return 'flowchart';
+  }
+
+  // 2. Inspeciona tags de formas inline em células (ex: [Início], (Início), [Processo], etc.)
+  const flowchartTagRegex =
+    /(?:\[|\()(?:in[ií]cio|fim|terminal|start|end|decis[aã]o|decision|processo|process|etapa|a[cç][aã]o|entrada(?:\/|\s*e\s*)sa[ií]da|io|i\/o|e\/s|subprocesso|subrotina|subroutine|documento|document|relat[oó]rio)(?:\]|\))|\{[\s\S]+?\??\}|\[\[[\s\S]+?\]\]|\(\[[\s\S]+?\]\)|\b(?:in[ií]cio|inicio|terminal|processo|decis[aã]o|decisao|fim)\s*(?:->|>)\s*(?:processo|decis[aã]o|decisao|fim|terminal|subroutine|documento|io)\b/i;
+
+  for (const { raw } of nonSeparatorLines) {
+    const cells = splitMarkdownTableRow(raw);
+    for (const cell of cells) {
+      if (flowchartTagRegex.test(cell)) {
+        return 'flowchart';
+      }
+    }
+  }
+
+  // Fallback padrão: 'concept-map' (compatibilidade estrita com exemplo.md)
+  return 'concept-map';
+}
+
+/**
+ * Mapeia tokens textuais de formato de nó para o FlowchartNodeShape canônico.
+ */
+export function normalizeNodeShapeString(raw: string): FlowchartNodeShape | null {
+  const clean = stripAccents(raw.toLowerCase())
+    .trim()
+    .replace(/[^a-z0-9/_-]/g, '');
+
+  if (
+    clean === 'inicio' ||
+    clean === 'fim' ||
+    clean === 'start' ||
+    clean === 'end' ||
+    clean === 'terminal' ||
+    clean === 'termino' ||
+    clean === 'parada' ||
+    clean === 'stop'
+  ) {
+    return 'terminal';
+  }
+
+  if (
+    clean === 'processo' ||
+    clean === 'process' ||
+    clean === 'etapa' ||
+    clean === 'acao' ||
+    clean === 'tarefa' ||
+    clean === 'atividade' ||
+    clean === 'step' ||
+    clean === 'task' ||
+    clean === 'action'
+  ) {
+    return 'process';
+  }
+
+  if (
+    clean === 'decisao' ||
+    clean === 'decision' ||
+    clean === 'desvio' ||
+    clean === 'teste' ||
+    clean === 'escolha'
+  ) {
+    return 'decision';
+  }
+
+  if (
+    clean === 'io' ||
+    clean === 'i/o' ||
+    clean === 'e/s' ||
+    clean === 'es' ||
+    clean.includes('entrada') ||
+    clean.includes('saida') ||
+    clean.includes('input') ||
+    clean.includes('output') ||
+    clean === 'dados' ||
+    clean === 'data'
+  ) {
+    return 'io';
+  }
+
+  if (
+    clean.includes('sub') ||
+    clean.includes('rotina') ||
+    clean.includes('routine') ||
+    clean.includes('procedimento')
+  ) {
+    return 'subroutine';
+  }
+
+  if (
+    clean.includes('document') ||
+    clean.includes('relatorio') ||
+    clean.includes('report') ||
+    clean.includes('comprovante') ||
+    clean.includes('certidao')
+  ) {
+    return 'document';
+  }
+
+  if (clean === 'concept' || clean === 'conceito') {
+    return 'concept';
+  }
+
+  return null;
+}
+
+export interface ExtractedShapeResult {
+  cleanLabel: string;
+  shape?: FlowchartNodeShape;
+  rawShapeTag?: string;
+}
+
+/**
+ * Extrai tags de forma declaradas inline nos rótulos de nós (prefixo, sufixo ou delimitadores).
+ */
+export function extractShapeFromLabel(rawLabel: string): ExtractedShapeResult {
+  const trimmed = rawLabel.trim();
+  if (!trimmed) {
+    return { cleanLabel: '' };
+  }
+
+  // 1. Sintaxes de delimitador estilo Mermaid:
+  // Subprocesso: [[Texto]]
+  const subroutineMatch = trimmed.match(/^\[\[([\s\S]+)\]\]$/);
+  if (subroutineMatch) {
+    return {
+      cleanLabel: cleanDisplayText(subroutineMatch[1]),
+      shape: 'subroutine',
+      rawShapeTag: '[[...]]',
+    };
+  }
+
+  // Decisão: {Texto} ou {Texto?}
+  const decisionMatch = trimmed.match(/^\{([\s\S]+)\}$/);
+  if (decisionMatch) {
+    return {
+      cleanLabel: cleanDisplayText(decisionMatch[1]),
+      shape: 'decision',
+      rawShapeTag: '{...}',
+    };
+  }
+
+  // Terminal: ([Texto])
+  const stadiumMatch = trimmed.match(/^\(\[([\s\S]+)\]\)$/);
+  if (stadiumMatch) {
+    return {
+      cleanLabel: cleanDisplayText(stadiumMatch[1]),
+      shape: 'terminal',
+      rawShapeTag: '([...])',
+    };
+  }
+
+  // Entrada/Saída: [/Texto/] ou [\Texto\]
+  const ioMermaidMatch = trimmed.match(/^(?:\[\/|\[\\)([\s\S]+?)(?:\/\]|\\\])$/);
+  if (ioMermaidMatch) {
+    return {
+      cleanLabel: cleanDisplayText(ioMermaidMatch[1]),
+      shape: 'io',
+      rawShapeTag: '[/.../]',
+    };
+  }
+
+  // 2. Tags entre colchetes ou parênteses:
+  const TAG_PATTERN =
+    '(?:in[ií]cio|fim|terminal|start|end|t[eé]rmino|decis[aã]o|decision|condi[cç][aã]o|processo|process|etapa|a[cç][aã]o|tarefa|entrada(?:/|\\s*e\\s*)sa[ií]da|io|i/o|e/s|input(?:/output)?|output|subprocesso|subrotina|subroutine|documento|document|relat[oó]rio)';
+
+  // Standalone tag exata: [Início], (Início), [Decisão], [Fim]
+  const exactMatch = trimmed.match(new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i'));
+  if (exactMatch) {
+    const shape = normalizeNodeShapeString(exactMatch[1]);
+    return {
+      cleanLabel: cleanDisplayText(exactMatch[1]),
+      shape: shape ?? undefined,
+      rawShapeTag: exactMatch[0],
+    };
+  }
+
+  // Tag prefixada: [Início] Protocolar Pedido ou (Início) Protocolar Pedido
+  const prefixMatch = trimmed.match(new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))\\s*[-:]?\\s*(.+)$`, 'i'));
+  if (prefixMatch) {
+    const shape = normalizeNodeShapeString(prefixMatch[1]);
+    return {
+      cleanLabel: cleanDisplayText(prefixMatch[2]),
+      shape: shape ?? undefined,
+      rawShapeTag: prefixMatch[1],
+    };
+  }
+
+  // Tag sufixada: Protocolar Pedido [Início] ou Protocolar Pedido (Início)
+  const suffixMatch = trimmed.match(new RegExp(`^(.*?)\\s*(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i'));
+  if (suffixMatch && suffixMatch[1].trim()) {
+    const shape = normalizeNodeShapeString(suffixMatch[2]);
+    return {
+      cleanLabel: cleanDisplayText(suffixMatch[1]),
+      shape: shape ?? undefined,
+      rawShapeTag: suffixMatch[2],
+    };
+  }
+
+  return {
+    cleanLabel: cleanDisplayText(trimmed),
+  };
+}
+
+/**
  * Detecta se as células pertencem a um cabeçalho de tabela e mapeia os índices das colunas.
+ * Suporta de 3 a 6 colunas para mapas conceituais e fluxogramas.
  */
 function detectHeaderMapping(cells: string[]): ColumnMapping | null {
   const normalizedCells = cells.map((c) =>
@@ -118,11 +486,12 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
   let phraseCol = -1;
   let targetCol = -1;
   let typeCol: number | undefined;
+  let shapeCol: number | undefined;
 
   normalizedCells.forEach((colName, idx) => {
     if (
       indexCol === undefined &&
-      ['#', 'id', 'no', 'num', 'nº', 'numero', 'indice', 'index', 'ordem'].includes(colName)
+      ['#', 'id', 'no', 'num', 'nº', 'numero', 'indice', 'index', 'ordem', 'item'].includes(colName)
     ) {
       indexCol = idx;
     } else if (
@@ -132,6 +501,7 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
         colName.includes('origem') ||
         colName === 'source' ||
         colName === 'de' ||
+        colName.includes('etapa anterior') ||
         colName === 'sujeito')
     ) {
       sourceCol = idx;
@@ -139,11 +509,16 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
       phraseCol === -1 &&
       (colName.includes('frase') ||
         colName.includes('ligacao') ||
-        colName.includes('relacao') ||
+        colName.includes('transicao') ||
+        colName.includes('condicao') ||
+        colName.includes('rotulo') ||
+        colName.includes('acao') ||
         colName.includes('verbo') ||
         colName.includes('predicado') ||
         colName === 'label' ||
-        colName === 'linking phrase')
+        colName === 'linking phrase' ||
+        colName === 'transition' ||
+        colName === 'condition')
     ) {
       phraseCol = idx;
     } else if (
@@ -153,9 +528,20 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
         colName.includes('destino') ||
         colName === 'target' ||
         colName === 'para' ||
+        colName.includes('proxima etapa') ||
+        colName.includes('etapa seguinte') ||
         colName === 'objeto')
     ) {
       targetCol = idx;
+    } else if (
+      shapeCol === undefined &&
+      (colName.includes('forma') ||
+        colName.includes('shape') ||
+        colName.includes('tipo de no') ||
+        colName.includes('tipo do no') ||
+        colName.includes('geometria'))
+    ) {
+      shapeCol = idx;
     } else if (
       typeCol === undefined &&
       (colName.includes('tipo') ||
@@ -169,16 +555,28 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
     }
   });
 
+  // Se Tipo / Forma foi mapeado como shapeCol, mas typeCol está indefinido, compartilha a coluna
+  if (shapeCol !== undefined && typeCol === undefined) {
+    typeCol = shapeCol;
+  } else if (typeCol !== undefined && shapeCol === undefined) {
+    const rawTypeName = normalizedCells[typeCol] ?? '';
+    if (rawTypeName.includes('forma') || rawTypeName.includes('shape')) {
+      shapeCol = typeCol;
+    }
+  }
+
   if (sourceCol !== -1 && phraseCol !== -1 && targetCol !== -1) {
     const usedCols = [sourceCol, phraseCol, targetCol];
     if (indexCol !== undefined) usedCols.push(indexCol);
     if (typeCol !== undefined) usedCols.push(typeCol);
+    if (shapeCol !== undefined) usedCols.push(shapeCol);
     return {
       indexCol,
       sourceCol,
       phraseCol,
       targetCol,
       typeCol,
+      shapeCol,
       expectedMinCols: Math.max(...usedCols) + 1,
     };
   }
@@ -187,10 +585,23 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
 }
 
 /**
- * Cria um mapeamento de colunas posicional quando a tabela não possui cabeçalho reconhecível.
+ * Cria mapeamento posicional de colunas quando a tabela não possui cabeçalho explícito.
  */
 function inferPositionalMapping(cells: string[]): ColumnMapping {
-  // Caso 5+ colunas onde a primeira coluna é um índice numérico (padrão entrada.md)
+  // Caso 6 colunas com índice: # | Origem | Frase | Destino | Tipo | Forma
+  if (cells.length >= 6 && /^\d+$/.test(cells[0].trim())) {
+    return {
+      indexCol: 0,
+      sourceCol: 1,
+      phraseCol: 2,
+      targetCol: 3,
+      typeCol: 4,
+      shapeCol: 5,
+      expectedMinCols: 6,
+    };
+  }
+
+  // Caso 5+ colunas onde a primeira coluna é um índice numérico (padrão entrada.md / exemplo.md)
   if (cells.length >= 5 && /^\d+$/.test(cells[0].trim())) {
     return {
       indexCol: 0,
@@ -202,7 +613,19 @@ function inferPositionalMapping(cells: string[]): ColumnMapping {
     };
   }
 
-  // Caso 4 colunas (padrão exemplo do prompt.md: Conceito A | Frase | Conceito B | Tipo)
+  // Caso 5 colunas sem índice numérico: Origem | Frase | Destino | Tipo | Forma
+  if (cells.length >= 5) {
+    return {
+      sourceCol: 0,
+      phraseCol: 1,
+      targetCol: 2,
+      typeCol: 3,
+      shapeCol: 4,
+      expectedMinCols: 5,
+    };
+  }
+
+  // Caso 4 colunas (padrão exemplo: Conceito A | Frase | Conceito B | Tipo)
   if (cells.length >= 4) {
     return {
       sourceCol: 0,
@@ -223,15 +646,65 @@ function inferPositionalMapping(cells: string[]): ColumnMapping {
 }
 
 /**
- * Classifica o tipo da relação a partir do texto bruto da célula.
+ * Classifica o tipo e subtipo da relação/transição a partir do texto bruto da célula e contexto.
  */
-export function parseRelationType(rawType: string): {
+export function parseRelationType(
+  rawType: string,
+  diagramMode: DiagramMode = 'concept-map',
+  linkingPhrase = ''
+): {
   type: RelationType;
+  flowKind?: FlowEdgeKind;
   isDefaulted: boolean;
   isUnknown: boolean;
 } {
   const cleaned = stripAccents(rawType.toLowerCase()).trim();
+  const phraseClean = stripAccents(linkingPhrase.toLowerCase()).trim();
 
+  // Em modo fluxograma:
+  if (diagramMode === 'flowchart') {
+    // 1. Condicional explícita na coluna Tipo
+    if (cleaned.includes('condi') || cleaned.includes('branch') || cleaned.includes('desvio')) {
+      return { type: 'conditional', flowKind: 'conditional', isDefaulted: false, isUnknown: false };
+    }
+
+    // 2. Retorno / Loop na coluna Tipo
+    if (
+      cleaned.includes('loop') ||
+      cleaned.includes('retorn') ||
+      cleaned.includes('volta') ||
+      cleaned.includes('reprocess')
+    ) {
+      return { type: 'loop-back', flowKind: 'loop-back', isDefaulted: false, isUnknown: false };
+    }
+
+    // 3. Sequencial explícita na coluna Tipo
+    if (cleaned.includes('seq') || cleaned.includes('fluxo') || cleaned.includes('operac')) {
+      return { type: 'sequence', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
+    }
+
+    // 4. Frase de ligação indicativa de condicional (ex: Sim, Não, True, False, Aprovado, Reprovado)
+    if (
+      ['sim', 'nao', 'yes', 'no', 'true', 'false', 'aprovado', 'reprovado', 'valido', 'invalido'].includes(phraseClean) ||
+      phraseClean.endsWith('?')
+    ) {
+      return { type: 'conditional', flowKind: 'conditional', isDefaulted: false, isUnknown: false };
+    }
+
+    // 5. Cruzada ou Hierárquica em fluxograma (se declarada expressamente)
+    if (cleaned.includes('cruzad') || cleaned.includes('cross')) {
+      return { type: 'cross-link', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
+    }
+    if (cleaned.includes('hier')) {
+      return { type: 'hierarchical', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
+    }
+
+    // 6. Se o campo de tipo estiver vazio ou contiver apenas formas (ex: início -> processo)
+    // Em fluxograma, o padrão canônico é 'sequence' sem ser tratado como erro desconhecido
+    return { type: 'sequence', flowKind: 'sequence', isDefaulted: !cleaned, isUnknown: false };
+  }
+
+  // Em modo mapa conceitual padrão (Novak):
   if (!cleaned) {
     return { type: 'hierarchical', isDefaulted: true, isUnknown: false };
   }
@@ -269,6 +742,9 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
   const totalRelations = relations.length;
   let hierarchicalCount = 0;
   let crossLinkCount = 0;
+  let sequenceCount = 0;
+  let conditionalCount = 0;
+  let loopBackCount = 0;
 
   const inDegreeTotal: Record<ConceptId, number> = {};
   const outDegreeTotal: Record<ConceptId, number> = {};
@@ -304,12 +780,24 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
       outDegreeHier[rel.sourceId]++;
       inDegreeHier[rel.targetId]++;
       adjHier[rel.sourceId].push(rel.targetId);
-    } else {
+    } else if (rel.type === 'cross-link') {
       crossLinkCount++;
+    } else if (rel.type === 'sequence') {
+      sequenceCount++;
+      outDegreeHier[rel.sourceId]++;
+      inDegreeHier[rel.targetId]++;
+      adjHier[rel.sourceId].push(rel.targetId);
+    } else if (rel.type === 'conditional') {
+      conditionalCount++;
+      outDegreeHier[rel.sourceId]++;
+      inDegreeHier[rel.targetId]++;
+      adjHier[rel.sourceId].push(rel.targetId);
+    } else if (rel.type === 'loop-back') {
+      loopBackCount++;
     }
   }
 
-  // Raízes hierárquicas: nós com inDegreeHier === 0 (se houver arestas hierárquicas)
+  // Raízes hierárquicas / de fluxo: nós com inDegreeHier === 0
   const rootConceptIds = conceptIds.filter((id) => inDegreeHier[id] === 0);
   const leafConceptIds = conceptIds.filter((id) => outDegreeTotal[id] === 0);
 
@@ -367,7 +855,7 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
     queue.push(rootId);
   }
 
-  // Usa um guarda de limite de profundidade para ser seguro mesmo se o usuário criar ciclo hierárquico
+  // Usa um guarda de limite de profundidade para ser seguro mesmo se houver ciclos
   const maxDepth = Math.max(totalConcepts, 1);
   while (queue.length > 0) {
     const u = queue.shift()!;
@@ -385,7 +873,7 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
     }
   }
 
-  // Fallback para nós em componentes puramente cíclicos onde nenhum teve inDegreeHier === 0
+  // Fallback para nós em componentes puramente cíclicos
   for (const id of conceptIds) {
     if (hierarchicalDepthById[id] === undefined) {
       hierarchicalDepthById[id] = 0;
@@ -403,12 +891,15 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
     hasDirectedCycles,
     hasHierarchicalCycles,
     hierarchicalDepthById,
+    sequenceCount,
+    conditionalCount,
+    loopBackCount,
   };
 }
 
 /**
  * Realiza o parsing tolerante a falhas de um documento Markdown contendo tabela(s)
- * de proposições de mapa conceitual (`Conceito A | Frase de ligação | Conceito B | Tipo`).
+ * de proposições de mapa conceitual ou fluxograma.
  */
 export function parseConceptMapMarkdown(
   markdownContent: string,
@@ -416,6 +907,15 @@ export function parseConceptMapMarkdown(
 ): ParseResult {
   const diagnostics: ParseDiagnostic[] = [];
   const defaultTitle = options.defaultTitle ?? 'Mapa Conceitual';
+
+  // 1. Extração do Frontmatter YAML (Tier 1)
+  const { contentWithoutFrontmatter, frontmatterMode, frontmatterTitle } =
+    extractFrontmatter(markdownContent ?? '');
+
+  const effectiveMarkdown = contentWithoutFrontmatter;
+
+  // 2. Detecção de Diretivas HTML / Textuais (Tier 2)
+  const directiveMode = detectDirectiveMode(effectiveMarkdown);
 
   const concepts: Record<ConceptId, ConceptNodeSemantic> = {};
   const conceptOrder: ConceptId[] = [];
@@ -426,7 +926,7 @@ export function parseConceptMapMarkdown(
   const relationOrder: RelationId[] = [];
   const seenRelationSignatures = new Set<string>();
 
-  if (!markdownContent || markdownContent.trim().length === 0) {
+  if (!effectiveMarkdown || effectiveMarkdown.trim().length === 0) {
     diagnostics.push({
       severity: 'warning',
       code: 'EMPTY_FILE',
@@ -434,7 +934,8 @@ export function parseConceptMapMarkdown(
     });
 
     const emptySemantic: SemanticModel = {
-      title: defaultTitle,
+      diagramMode: frontmatterMode ?? directiveMode ?? options.diagramMode ?? 'concept-map',
+      title: frontmatterTitle ?? defaultTitle,
       concepts: {},
       conceptOrder: [],
       relations: {},
@@ -449,10 +950,9 @@ export function parseConceptMapMarkdown(
     };
   }
 
-  const lines = markdownContent.replace(/\r\n/g, '\n').split('\n');
-  let extractedTitle: string | undefined;
+  const lines = effectiveMarkdown.replace(/\r\n/g, '\n').split('\n');
+  let extractedTitle: string | undefined = frontmatterTitle;
 
-  // Coleta linhas candidatas de tabela e primeiro título Markdown se existir
   interface IndexedLine {
     lineNumber: number;
     raw: string;
@@ -476,6 +976,19 @@ export function parseConceptMapMarkdown(
     }
   }
 
+  // 3. Resolução Final do Modo do Diagrama (3-Tier Cascade)
+  let detectedMode: DiagramMode;
+  if (options.diagramMode) {
+    detectedMode = options.diagramMode;
+  } else if (frontmatterMode) {
+    detectedMode = frontmatterMode;
+  } else if (directiveMode) {
+    detectedMode = directiveMode;
+  } else {
+    // Heurística de cabeçalho e formas (Tier 3) com fallback padrão para 'concept-map'
+    detectedMode = detectHeuristicMode(tableLines);
+  }
+
   if (tableLines.length === 0) {
     diagnostics.push({
       severity: 'warning',
@@ -484,6 +997,7 @@ export function parseConceptMapMarkdown(
     });
 
     const emptySemantic: SemanticModel = {
+      diagramMode: detectedMode,
       title: extractedTitle ?? defaultTitle,
       concepts: {},
       conceptOrder: [],
@@ -499,21 +1013,47 @@ export function parseConceptMapMarkdown(
     };
   }
 
-  // Helper para registrar ou recuperar um Conceito garantindo unicidade por chave canônica
-  const getOrCreateConcept = (rawLabel: string, lineNumber: number): ConceptId => {
-    const displayLabel = cleanDisplayText(rawLabel);
+  // Helper de registro de nó garantindo deduplicação e preservação de formas
+  const getOrCreateConcept = (
+    rawLabel: string,
+    lineNumber: number,
+    explicitShape?: FlowchartNodeShape,
+    rawShapeTag?: string
+  ): ConceptId => {
+    const extracted = extractShapeFromLabel(rawLabel);
+    const displayLabel = extracted.cleanLabel;
     const normalizedKey = normalizeConceptKey(displayLabel);
+
+    const shapeToAssign = extracted.shape ?? explicitShape;
+    const shapeTag = rawShapeTag ?? extracted.rawShapeTag;
 
     const existingId = conceptIdByNormalizedKey.get(normalizedKey);
     if (existingId) {
       const existingNode = concepts[existingId];
-      if (existingNode && existingNode.label !== displayLabel) {
-        diagnostics.push({
-          severity: 'info',
-          code: 'CASE_MISMATCH_CONCEPT',
-          message: `Conceito "${displayLabel}" na linha ${lineNumber} foi unificado ao conceito existente "${existingNode.label}".`,
-          lineNumber,
-        });
+      if (existingNode) {
+        if (existingNode.label !== displayLabel) {
+          diagnostics.push({
+            severity: 'info',
+            code: 'CASE_MISMATCH_CONCEPT',
+            message: `Conceito "${displayLabel}" na linha ${lineNumber} foi unificado ao conceito existente "${existingNode.label}".`,
+            lineNumber,
+          });
+        }
+        // Atualiza a forma do nó se uma forma mais específica for identificada
+        if (
+          shapeToAssign &&
+          (!existingNode.nodeShape ||
+            existingNode.nodeShape === 'concept' ||
+            (existingNode.nodeShape === 'process' && shapeToAssign !== 'concept'))
+        ) {
+          existingNode.nodeShape = shapeToAssign;
+        }
+        if (shapeTag && !existingNode.sourceMeta?.rawShapeTag) {
+          existingNode.sourceMeta = {
+            ...existingNode.sourceMeta,
+            rawShapeTag: shapeTag,
+          };
+        }
       }
       return existingId;
     }
@@ -528,13 +1068,20 @@ export function parseConceptMapMarkdown(
     usedConceptIds.add(candidateId);
     conceptIdByNormalizedKey.set(normalizedKey, candidateId);
 
+    // Forma padrão: em modo fluxograma, nós não marcados assumem 'process'
+    // Em mapa conceitual, assumem 'concept' (ou undefined)
+    const finalShape: FlowchartNodeShape | undefined =
+      shapeToAssign ?? (detectedMode === 'flowchart' ? 'process' : undefined);
+
     concepts[candidateId] = {
       id: candidateId,
       label: displayLabel,
       normalizedKey,
+      nodeShape: finalShape,
       sourceMeta: {
         firstSeenLine: lineNumber,
         createdManually: false,
+        rawShapeTag: shapeTag,
       },
     };
     conceptOrder.push(candidateId);
@@ -549,14 +1096,12 @@ export function parseConceptMapMarkdown(
   for (let i = 0; i < tableLines.length; i++) {
     const { lineNumber, raw } = tableLines[i];
 
-    // Ignora linhas separadoras `|---|---|`
     if (isTableSeparatorLine(raw)) {
       continue;
     }
 
     const cells = splitMarkdownTableRow(raw);
 
-    // Verifica se a linha atual é um cabeçalho de tabela
     const headerCandidate = detectHeaderMapping(cells);
     if (headerCandidate) {
       activeMapping = headerCandidate;
@@ -564,7 +1109,6 @@ export function parseConceptMapMarkdown(
       continue;
     }
 
-    // Se ainda não temos mapeamento (tabela sem cabeçalho explícito), infere pela primeira linha de dados
     if (!activeMapping) {
       activeMapping = inferPositionalMapping(cells);
       detectedColumnCount = Math.max(cells.length, activeMapping.expectedMinCols);
@@ -577,7 +1121,6 @@ export function parseConceptMapMarkdown(
       });
     }
 
-    // Validação de linha malformada / incompleta
     let rowMapping = activeMapping;
     if (cells.length < 3) {
       diagnostics.push({
@@ -590,7 +1133,7 @@ export function parseConceptMapMarkdown(
       continue;
     }
 
-    // Caso a tabela tenha cabeçalho de 5 colunas (com #), mas uma linha específica tenha sido escrita com 4 colunas (sem #)
+    // Adaptação se uma tabela de 5 colunas tiver linhas escritas com 4 colunas sem índice
     if (
       rowMapping.indexCol === 0 &&
       cells.length === 4 &&
@@ -611,6 +1154,10 @@ export function parseConceptMapMarkdown(
     const rawType =
       rowMapping.typeCol !== undefined && rowMapping.typeCol < cells.length
         ? cells[rowMapping.typeCol]
+        : '';
+    const rawShape =
+      rowMapping.shapeCol !== undefined && rowMapping.shapeCol < cells.length
+        ? cells[rowMapping.shapeCol]
         : '';
 
     const sourceLabel = cleanDisplayText(rawSource);
@@ -638,7 +1185,8 @@ export function parseConceptMapMarkdown(
       });
     }
 
-    if (!linkingPhrase) {
+    // Em modo fluxograma, frases de ligação vazias são permitidas e esperadas!
+    if (!linkingPhrase && detectedMode !== 'flowchart') {
       diagnostics.push({
         severity: 'warning',
         code: 'EMPTY_LINKING_PHRASE',
@@ -648,8 +1196,39 @@ export function parseConceptMapMarkdown(
       });
     }
 
-    const typeInfo = parseRelationType(rawType);
-    if (typeInfo.isDefaulted) {
+    // Parsing de formas declaradas na coluna de Forma ou Tipo
+    let sourceColShape: FlowchartNodeShape | undefined;
+    let targetColShape: FlowchartNodeShape | undefined;
+
+    const shapeTextToInspect = rawShape || (rawType.includes('->') || rawType.includes('>') ? rawType : '');
+    if (shapeTextToInspect) {
+      const parts = shapeTextToInspect.split(/->|>/).map((s) => s.trim());
+      if (parts.length === 2) {
+        sourceColShape = normalizeNodeShapeString(parts[0]) ?? undefined;
+        targetColShape = normalizeNodeShapeString(parts[1]) ?? undefined;
+      } else if (parts.length === 1 && parts[0]) {
+        const cleanedShape = stripAccents(parts[0].toLowerCase()).trim();
+        const isRelationTypeWord =
+          cleanedShape.includes('condi') ||
+          cleanedShape.includes('retorn') ||
+          cleanedShape.includes('loop') ||
+          cleanedShape.includes('seq') ||
+          cleanedShape.includes('hier') ||
+          cleanedShape.includes('cruzad');
+
+        if (!isRelationTypeWord) {
+          const single = normalizeNodeShapeString(parts[0]);
+          if (single) {
+            targetColShape = single;
+          }
+        }
+      }
+    }
+
+    // Classificação da relação
+    const typeInfo = parseRelationType(rawType, detectedMode, linkingPhrase);
+
+    if (typeInfo.isDefaulted && detectedMode !== 'flowchart') {
       diagnostics.push({
         severity: 'warning',
         code: 'MISSING_TYPE_DEFAULTED',
@@ -657,7 +1236,7 @@ export function parseConceptMapMarkdown(
         lineNumber,
         rawLine: raw,
       });
-    } else if (typeInfo.isUnknown) {
+    } else if (typeInfo.isUnknown && detectedMode !== 'flowchart') {
       diagnostics.push({
         severity: 'warning',
         code: 'UNKNOWN_RELATION_TYPE',
@@ -667,10 +1246,10 @@ export function parseConceptMapMarkdown(
       });
     }
 
-    const sourceId = getOrCreateConcept(sourceLabel, lineNumber);
-    const targetId = getOrCreateConcept(targetLabel, lineNumber);
+    const sourceId = getOrCreateConcept(sourceLabel, lineNumber, sourceColShape);
+    const targetId = getOrCreateConcept(targetLabel, lineNumber, targetColShape);
 
-    if (sourceId === targetId) {
+    if (sourceId === targetId && typeInfo.type !== 'loop-back') {
       diagnostics.push({
         severity: 'warning',
         code: 'SELF_LOOP_DETECTED',
@@ -695,7 +1274,6 @@ export function parseConceptMapMarkdown(
     }
     seenRelationSignatures.add(signature);
 
-    // Determina o orderIndex preservando o número da coluna `#` se disponível, ou sequencial
     let orderIndex = sequentialOrder;
     if (rowMapping.indexCol !== undefined && rowMapping.indexCol < cells.length) {
       const parsedNum = Number.parseInt(cells[rowMapping.indexCol].trim(), 10);
@@ -713,7 +1291,8 @@ export function parseConceptMapMarkdown(
       linkingPhrase,
       targetId,
       type: typeInfo.type,
-      rawType: cleanDisplayText(rawType) || (typeInfo.type === 'hierarchical' ? 'hierárquica' : 'ligação cruzada'),
+      flowKind: typeInfo.flowKind,
+      rawType: cleanDisplayText(rawType) || (typeInfo.type === 'hierarchical' ? 'hierárquica' : 'sequencial'),
       sourceMeta: {
         lineNumber,
         rawRowText: raw,
@@ -724,6 +1303,7 @@ export function parseConceptMapMarkdown(
   }
 
   const semantic: SemanticModel = {
+    diagramMode: detectedMode,
     title: extractedTitle ?? defaultTitle,
     concepts,
     conceptOrder,

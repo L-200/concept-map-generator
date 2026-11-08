@@ -6,6 +6,7 @@ import { useConceptMapStore } from '../../../store/useConceptMapStore';
 import { parseConceptMapMarkdown } from '../../parser/markdownParser';
 import {
   escapeXml,
+  exportAsPng,
   exportSemanticToMarkdown,
   generateStandaloneVectorSvg,
   parseAndValidateJsonDocument,
@@ -113,10 +114,10 @@ describe('FileExporter & Persistência Completa (Etapas 6 e 7)', () => {
     expect(reparsed.metrics.totalRelations).toBe(47);
   });
 
-  it('evita sobreposição de rótulos de conexões irmãs ao exportar debug/novo-mapa.cmap.json para SVG', () => {
+  it('evita sobreposição de rótulos de conexões irmãs ao exportar novo-mapa.cmap.json para SVG', () => {
     const debugJsonPath = path.resolve(
       __dirname,
-      '../../../../debug/novo-mapa.cmap.json'
+      './fixtures/novo-mapa.cmap.json'
     );
     const rawJson = fs.readFileSync(debugJsonPath, 'utf-8');
     const doc = parseAndValidateJsonDocument(rawJson);
@@ -152,6 +153,158 @@ describe('FileExporter & Persistência Completa (Etapas 6 e 7)', () => {
         expect(overlapsHorizontally && overlapsVertically).toBe(false);
       }
     }
+  });
+
+  describe('Milestone 3: Exportação Vetorial SVG & Raster PNG de Fluxogramas', () => {
+    it('exporta todos os 6 formatos de nós de fluxograma para SVG com geometrias autênticas', () => {
+      const store = useConceptMapStore.getState();
+      store.setDiagramMode('flowchart');
+
+      // Adiciona nós com os 6 formatos específicos
+      const nTerm = store.addConcept('Início do Processo', { x: 100, y: 100 });
+      store.updateNodeShape(nTerm, 'terminal');
+
+      const nProc = store.addConcept('Executar Análise', { x: 100, y: 220 });
+      store.updateNodeShape(nProc, 'process');
+
+      const nDec = store.addConcept('Dados Válidos?', { x: 100, y: 340 });
+      store.updateNodeShape(nDec, 'decision');
+
+      const nIo = store.addConcept('Entrada de Dados', { x: 100, y: 460 });
+      store.updateNodeShape(nIo, 'io');
+
+      const nSub = store.addConcept('Módulo de Autenticação', { x: 100, y: 580 });
+      store.updateNodeShape(nSub, 'subroutine');
+
+      const nDoc = store.addConcept('Relatório Mensal', { x: 100, y: 700 });
+      store.updateNodeShape(nDoc, 'document');
+
+      const state = useConceptMapStore.getState();
+      const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+      // 1. Terminal: <rect rx="..." ry="..."> (estádio com cantos arredondados)
+      expect(svg).toContain('data-shape="terminal"');
+      expect(svg).toMatch(/<rect[^>]+rx="2[0-9](\.[0-9])?"[^>]+ry="2[0-9](\.[0-9])?"/);
+
+      // 2. Processo: <rect rx="6" ry="6"
+      expect(svg).toContain('data-shape="process"');
+      expect(svg).toContain('rx="6" ry="6"');
+
+      // 3. Decisão: <polygon points="..." (losango)
+      expect(svg).toContain('data-shape="decision"');
+      expect(svg).toContain('<polygon');
+
+      // 4. Entrada/Saída: <polygon points="..." (paralelogramo inclinado)
+      expect(svg).toContain('data-shape="io"');
+
+      // 5. Subprocesso: <rect> e duas <line> verticais
+      expect(svg).toContain('data-shape="subroutine"');
+      expect(svg).toContain('<line');
+
+      // 6. Documento: <path d="M... C... Z" (borda inferior ondulada)
+      expect(svg).toContain('data-shape="document"');
+      expect(svg).toContain('<path');
+    });
+
+    it('suprime rótulos vazios de conexões em modo fluxograma e exibe setas contínuas limpas', () => {
+      const store = useConceptMapStore.getState();
+      store.setDiagramMode('flowchart');
+
+      const n1 = store.addConcept('Passo A', { x: 100, y: 100 });
+      const n2 = store.addConcept('Passo B', { x: 100, y: 250 });
+      const relId = store.addRelation(n1, n2, '');
+
+      const state = useConceptMapStore.getState();
+      const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+      // A aresta deve ser desenhada com seta padrão
+      expect(svg).toContain(`id="edge-${relId}"`);
+      expect(svg).toContain('marker-end="url(#arrow-hier)"');
+
+      // Rótulos vazios NÃO devem emitir elementos de texto ou retângulos vazios
+      expect(svg).not.toContain(`data-relation-id="${relId}"`);
+      expect(svg).not.toContain('<text class="edge-label"></text>');
+    });
+
+    it('renderiza badges condicionais "Sim" e "Não" com paletas semânticas esmeralda e rosa', () => {
+      const store = useConceptMapStore.getState();
+      store.setDiagramMode('flowchart');
+
+      const nDec = store.addConcept('Aprovado?', { x: 200, y: 100 });
+      store.updateNodeShape(nDec, 'decision');
+
+      const nOk = store.addConcept('Prosseguir', { x: 400, y: 100 });
+      const nFail = store.addConcept('Revisar', { x: 200, y: 300 });
+
+      const relYes = store.addRelation(nDec, nOk, 'Sim');
+      const relNo = store.addRelation(nDec, nFail, 'Não');
+
+      const state = useConceptMapStore.getState();
+      const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+      // Conexão positiva (Sim): verde (#f0fdf4, #22c55e) e seta verde (#arrow-yes)
+      expect(svg).toContain(`data-relation-id="${relYes}"`);
+      expect(svg).toContain('marker-end="url(#arrow-yes)"');
+      expect(svg).toContain('fill="#f0fdf4"');
+      expect(svg).toContain('stroke="#22c55e"');
+
+      // Conexão negativa (Não): vermelho (#fef2f2, #ef4444) e seta vermelha (#arrow-no)
+      expect(svg).toContain(`data-relation-id="${relNo}"`);
+      expect(svg).toContain('marker-end="url(#arrow-no)"');
+      expect(svg).toContain('fill="#fef2f2"');
+      expect(svg).toContain('stroke="#ef4444"');
+    });
+
+    it('preserva diagramMode e nodeShape no ciclo completo de exportação e importação JSON (.cmap.json)', () => {
+      const store = useConceptMapStore.getState();
+      store.setDiagramMode('flowchart');
+      store.updateNodeShape('concept-projeto-pop', 'decision');
+
+      const exportedDoc = store.exportDocument();
+      expect(exportedDoc.semantic.diagramMode).toBe('flowchart');
+      expect(exportedDoc.visual.nodes['concept-projeto-pop'].nodeShape).toBe('decision');
+
+      const jsonStr = serializeDocumentToJson(exportedDoc);
+      const validated = parseAndValidateJsonDocument(jsonStr);
+
+      expect(validated.semantic.diagramMode).toBe('flowchart');
+      expect(validated.visual.nodes['concept-projeto-pop'].nodeShape).toBe('decision');
+
+      store.loadFromDocument(validated);
+      const restored = useConceptMapStore.getState();
+      expect(restored.semantic.diagramMode).toBe('flowchart');
+      expect(restored.visual.nodes['concept-projeto-pop'].nodeShape).toBe('decision');
+    });
+
+    it('exportAsPng é uma função exportada e acessível', () => {
+      expect(typeof exportAsPng).toBe('function');
+    });
+
+    it('exporta exemplo-fluxograma.md com todos os 6 formatos e transições sem erros', async () => {
+      const fluxoPath = path.resolve(__dirname, '../../../../exemplo-fluxograma.md');
+      if (fs.existsSync(fluxoPath)) {
+        const fluxoContent = fs.readFileSync(fluxoPath, 'utf-8');
+        const parsed = parseConceptMapMarkdown(fluxoContent);
+        expect(parsed.semantic.diagramMode).toBe('flowchart');
+
+        const store = useConceptMapStore.getState();
+        await store.loadFromMarkdown(fluxoContent, 'exemplo-fluxograma.md');
+
+        const state = useConceptMapStore.getState();
+        const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+        expect(svg).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+        expect(svg).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
+        expect(svg).toContain('Abertura de Pull Request');
+        expect(svg).toContain('Deploy Realizado com');
+        expect(svg).toContain('data-shape="terminal"');
+        expect(svg).toContain('data-shape="decision"');
+        expect(svg).toContain('data-shape="process"');
+        expect(svg).toContain('data-shape="io"');
+        expect(svg).toContain('data-shape="subroutine"');
+        expect(svg).toContain('data-shape="document"');
+      }
+    });
   });
 });
 
