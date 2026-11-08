@@ -3,9 +3,13 @@ import { create } from 'zustand';
 import type {
   ConceptId,
   ConceptMapDocument,
+  ConceptNodeVisual,
   CrossLinkVisibilityMode,
+  DiagramMode,
   Dimensions2D,
   EdgeCurveType,
+  FlowchartNodeShape,
+  FlowTransitionKind,
   HandlePosition,
   LayoutSettings,
   NodeVisualStyle,
@@ -28,6 +32,7 @@ import { estimateConceptNodeDimensions } from '../services/layout/nodeSizing';
 import {
   cleanDisplayText,
   computeSemanticGraphMetrics,
+  extractShapeFromLabel,
   normalizeConceptKey,
   parseConceptMapMarkdown,
 } from '../services/parser/markdownParser';
@@ -66,8 +71,11 @@ export interface ConceptMapState {
   hoveredNodeId: ConceptId | null;
   searchQuery: string;
 
+  // Ações de alternância de modo
+  setDiagramMode: (mode: DiagramMode) => void;
+
   // Ações de carregamento e persistência
-  createNewEmptyMap: (withStarterConcept?: boolean) => void;
+  createNewEmptyMap: (withStarterConcept?: boolean, mode?: DiagramMode) => void;
   loadFromMarkdown: (markdownContent: string, fileName?: string) => Promise<void>;
   loadFromDocument: (doc: ConceptMapDocument) => void;
   exportDocument: () => ConceptMapDocument;
@@ -76,25 +84,35 @@ export interface ConceptMapState {
   markSaved: () => void;
 
   // Ações de manipulação de Conceitos (Nós)
-  addConcept: (label?: string, position?: Point2D) => ConceptId;
+  addConcept: (label?: string, position?: Point2D, shape?: FlowchartNodeShape) => ConceptId;
   addConnectedConcept: (
     sourceId: ConceptId,
     newConceptLabel?: string,
     linkingPhrase?: string,
     type?: RelationType,
-    position?: Point2D
+    position?: Point2D,
+    targetShape?: FlowchartNodeShape
   ) => { conceptId: ConceptId; relationId: RelationId } | null;
   addPropositionByNames: (
     sourceLabel: string,
     linkingPhrase: string,
     targetLabel: string,
-    type?: RelationType
+    type?: RelationType,
+    sourceShape?: FlowchartNodeShape,
+    targetShape?: FlowchartNodeShape
   ) => RelationId | null;
   updateConceptLabel: (conceptId: ConceptId, newLabel: string) => void;
   updateConceptStyleAndNotes: (
     conceptId: ConceptId,
     updates: { notes?: string; style?: NodeVisualStyle }
   ) => void;
+  updateNodeShape: (conceptId: ConceptId, shape: FlowchartNodeShape) => void;
+  createDecisionBranches: (nodeId: ConceptId) => {
+    simConceptId: ConceptId;
+    naoConceptId: ConceptId;
+    simRelationId: RelationId;
+    naoRelationId: RelationId;
+  } | null;
   moveNodes: (
     moves: Array<{ conceptId: ConceptId; position: Point2D }>,
     markPinned?: boolean
@@ -184,6 +202,20 @@ function generateUniqueRelationId(
   return `rel-${counter}`;
 }
 
+function getLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+    if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
+      return (globalThis as any).localStorage;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function persistDraftSnapshot(
   semantic: SemanticModel,
   visual: VisualModel,
@@ -199,6 +231,7 @@ function persistDraftSnapshot(
       createdAt: now,
       updatedAt: now,
       originalColumnCount: 5,
+      diagramMode: semantic.diagramMode ?? 'concept-map',
     },
     semantic,
     visual,
@@ -206,8 +239,9 @@ function persistDraftSnapshot(
   };
 
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(doc));
+    const storage = getLocalStorage();
+    if (storage) {
+      storage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(doc));
     }
   } catch {
     // Ignora falha de quota em ambientes restritos
@@ -233,65 +267,295 @@ export const useConceptMapStore = create<ConceptMapState>()(
       hoveredNodeId: null,
       searchQuery: '',
 
-      createNewEmptyMap: (withStarterConcept = false) => {
-        let nextSemantic: SemanticModel = {
-          ...EMPTY_SEMANTIC,
-          title: 'Novo Mapa Conceitual',
-        };
-        let nextVisual: VisualModel = {
-          ...EMPTY_VISUAL,
-          layoutSettings: { ...get().visual.layoutSettings },
-        };
-        let initialSelectedNodes: ConceptId[] = [];
-
-        if (withStarterConcept) {
-          const starterLabel = 'Conceito Principal';
-          const starterId = generateUniqueConceptId(starterLabel, {});
-          const starterDims = estimateConceptNodeDimensions(starterLabel);
-
-          nextSemantic = {
-            ...nextSemantic,
-            concepts: {
-              [starterId]: {
-                id: starterId,
-                label: starterLabel,
-                normalizedKey: normalizeConceptKey(starterLabel),
-                sourceMeta: { createdManually: true },
-              },
-            },
-            conceptOrder: [starterId],
-          };
-
-          nextVisual = {
-            ...nextVisual,
-            nodes: {
-              [starterId]: {
-                conceptId: starterId,
-                position: { x: 400, y: 120 },
-                dimensions: starterDims,
-                pinned: false,
-                customSize: false,
-                computedLayer: 0,
-              },
-            },
-          };
-          initialSelectedNodes = [starterId];
+      setDiagramMode: (mode: DiagramMode) => {
+        const state = get();
+        if (state.semantic.diagramMode === mode) {
+          return;
         }
+
+        const isFlowchart = mode === 'flowchart';
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          diagramMode: mode,
+        };
+
+        const smartHandles = computeSmartEdgeHandles(
+          nextSemantic,
+          state.visual.nodes,
+          state.visual.layoutSettings.direction
+        );
+
+        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {};
+        for (const [rId, edge] of Object.entries(state.visual.edges)) {
+          const rel = nextSemantic.relations[rId];
+          const defaultCurve: EdgeCurveType = isFlowchart
+            ? 'smoothstep'
+            : (rel?.type === 'hierarchical' ? 'smoothstep' : 'bezier');
+
+          const smart = smartHandles[rId];
+          updatedEdges[rId] = {
+            ...edge,
+            curveType: defaultCurve,
+            sourceHandle: smart?.sourceHandle ?? edge.sourceHandle,
+            targetHandle: smart?.targetHandle ?? edge.targetHandle,
+          };
+        }
+
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          edges: updatedEdges,
+          layoutSettings: {
+            ...state.visual.layoutSettings,
+            algorithm:
+              isFlowchart && state.visual.layoutSettings.algorithm === 'novak-backbone'
+                ? 'dagre-hierarchical'
+                : state.visual.layoutSettings.algorithm,
+          },
+        };
 
         const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
         const savedAt = persistDraftSnapshot(
           nextSemantic,
           nextVisual,
-          'novo-mapa.md',
-          []
+          state.sourceFileName,
+          state.diagnostics
         );
 
         set({
           semantic: nextSemantic,
           visual: nextVisual,
           metrics: nextMetrics,
+          hasUnsavedChanges: true,
+          lastSavedAt: savedAt,
+        });
+      },
+
+      createNewEmptyMap: (withStarterConcept = false, mode: DiagramMode = 'concept-map') => {
+        const isFlowchart = mode === 'flowchart';
+        const defaultTitle = isFlowchart ? 'Novo Fluxograma' : 'Novo Mapa Conceitual';
+        const defaultFileName = isFlowchart ? 'novo-fluxograma.md' : 'novo-mapa.md';
+
+        let nextSemantic: SemanticModel = {
+          ...EMPTY_SEMANTIC,
+          diagramMode: mode,
+          title: defaultTitle,
+        };
+
+        let nextVisual: VisualModel = {
+          ...EMPTY_VISUAL,
+          layoutSettings: {
+            ...get().visual.layoutSettings,
+            algorithm: isFlowchart ? 'dagre-hierarchical' : get().visual.layoutSettings.algorithm,
+          },
+        };
+
+        let initialSelectedNodes: ConceptId[] = [];
+
+        if (withStarterConcept) {
+          if (!isFlowchart) {
+            const starterLabel = 'Conceito Principal';
+            const starterId = generateUniqueConceptId(starterLabel, {});
+            const starterDims = estimateConceptNodeDimensions(starterLabel);
+
+            nextSemantic = {
+              ...nextSemantic,
+              concepts: {
+                [starterId]: {
+                  id: starterId,
+                  label: starterLabel,
+                  normalizedKey: normalizeConceptKey(starterLabel),
+                  nodeShape: 'concept',
+                  sourceMeta: { createdManually: true },
+                },
+              },
+              conceptOrder: [starterId],
+            };
+
+            nextVisual = {
+              ...nextVisual,
+              nodes: {
+                [starterId]: {
+                  conceptId: starterId,
+                  position: { x: 400, y: 120 },
+                  dimensions: starterDims,
+                  pinned: false,
+                  customSize: false,
+                  computedLayer: 0,
+                  nodeShape: 'concept',
+                },
+              },
+            };
+            initialSelectedNodes = [starterId];
+          } else {
+            const inicioId = 'concept-inicio';
+            const processoId = 'concept-processo';
+            const decisaoId = 'concept-decisao';
+            const fimId = 'concept-fim';
+
+            const inicioDims = estimateConceptNodeDimensions('Início', undefined, false, 'terminal');
+            const processoDims = estimateConceptNodeDimensions('Processo', undefined, false, 'process');
+            const decisaoDims = estimateConceptNodeDimensions('Decisão', undefined, false, 'decision');
+            const fimDims = estimateConceptNodeDimensions('Fim', undefined, false, 'terminal');
+
+            nextSemantic = {
+              ...nextSemantic,
+              concepts: {
+                [inicioId]: {
+                  id: inicioId,
+                  label: 'Início',
+                  normalizedKey: normalizeConceptKey('Início'),
+                  nodeShape: 'terminal',
+                  sourceMeta: { createdManually: true },
+                },
+                [processoId]: {
+                  id: processoId,
+                  label: 'Processo',
+                  normalizedKey: normalizeConceptKey('Processo'),
+                  nodeShape: 'process',
+                  sourceMeta: { createdManually: true },
+                },
+                [decisaoId]: {
+                  id: decisaoId,
+                  label: 'Decisão',
+                  normalizedKey: normalizeConceptKey('Decisão'),
+                  nodeShape: 'decision',
+                  sourceMeta: { createdManually: true },
+                },
+                [fimId]: {
+                  id: fimId,
+                  label: 'Fim',
+                  normalizedKey: normalizeConceptKey('Fim'),
+                  nodeShape: 'terminal',
+                  sourceMeta: { createdManually: true },
+                },
+              },
+              conceptOrder: [inicioId, processoId, decisaoId, fimId],
+              relations: {
+                'rel-1': {
+                  id: 'rel-1',
+                  orderIndex: 1,
+                  sourceId: inicioId,
+                  linkingPhrase: '',
+                  targetId: processoId,
+                  type: 'sequence',
+                  flowKind: 'sequence',
+                  rawType: 'sequencial',
+                  sourceMeta: { createdManually: true },
+                },
+                'rel-2': {
+                  id: 'rel-2',
+                  orderIndex: 2,
+                  sourceId: processoId,
+                  linkingPhrase: '',
+                  targetId: decisaoId,
+                  type: 'sequence',
+                  flowKind: 'sequence',
+                  rawType: 'sequencial',
+                  sourceMeta: { createdManually: true },
+                },
+                'rel-3': {
+                  id: 'rel-3',
+                  orderIndex: 3,
+                  sourceId: decisaoId,
+                  linkingPhrase: 'Sim',
+                  targetId: fimId,
+                  type: 'conditional',
+                  flowKind: 'conditional',
+                  rawType: 'condicional',
+                  sourceMeta: { createdManually: true },
+                },
+              },
+              relationOrder: ['rel-1', 'rel-2', 'rel-3'],
+            };
+
+            nextVisual = {
+              ...nextVisual,
+              nodes: {
+                [inicioId]: {
+                  conceptId: inicioId,
+                  position: { x: 400, y: 60 },
+                  dimensions: inicioDims,
+                  pinned: false,
+                  customSize: false,
+                  computedLayer: 0,
+                  nodeShape: 'terminal',
+                },
+                [processoId]: {
+                  conceptId: processoId,
+                  position: { x: 400, y: 180 },
+                  dimensions: processoDims,
+                  pinned: false,
+                  customSize: false,
+                  computedLayer: 1,
+                  nodeShape: 'process',
+                },
+                [decisaoId]: {
+                  conceptId: decisaoId,
+                  position: { x: 400, y: 310 },
+                  dimensions: decisaoDims,
+                  pinned: false,
+                  customSize: false,
+                  computedLayer: 2,
+                  nodeShape: 'decision',
+                },
+                [fimId]: {
+                  conceptId: fimId,
+                  position: { x: 400, y: 470 },
+                  dimensions: fimDims,
+                  pinned: false,
+                  customSize: false,
+                  computedLayer: 3,
+                  nodeShape: 'terminal',
+                },
+              },
+              edges: {
+                'rel-1': {
+                  relationId: 'rel-1',
+                  curveType: 'smoothstep',
+                  sourceHandle: 'bottom',
+                  targetHandle: 'top',
+                  labelOffset: { t: 0.5 },
+                  flowKind: 'sequence',
+                },
+                'rel-2': {
+                  relationId: 'rel-2',
+                  curveType: 'smoothstep',
+                  sourceHandle: 'bottom',
+                  targetHandle: 'top',
+                  labelOffset: { t: 0.5 },
+                  flowKind: 'sequence',
+                },
+                'rel-3': {
+                  relationId: 'rel-3',
+                  curveType: 'smoothstep',
+                  sourceHandle: 'bottom',
+                  targetHandle: 'top',
+                  labelOffset: { t: 0.5 },
+                  flowKind: 'conditional',
+                },
+              },
+            };
+            initialSelectedNodes = [inicioId];
+          }
+        }
+
+        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
+        const savedAt =
+          nextSemantic.conceptOrder.length > 0
+            ? persistDraftSnapshot(
+                nextSemantic,
+                nextVisual,
+                defaultFileName,
+                []
+              )
+            : new Date().toISOString();
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          metrics: nextMetrics,
           diagnostics: [],
-          sourceFileName: 'novo-mapa.md',
+          sourceFileName: defaultFileName,
           hasUnsavedChanges: false,
           lastSavedAt: savedAt,
           isLayoutRunning: false,
@@ -307,13 +571,24 @@ export const useConceptMapStore = create<ConceptMapState>()(
       loadFromMarkdown: async (markdownContent: string, fileName = 'exemplo.md') => {
         set({ isLayoutRunning: true });
         const parsed = parseConceptMapMarkdown(markdownContent);
-        const layoutResult = await computeConceptMapLayout(parsed.semantic);
+        const layoutSettings: LayoutSettings = {
+          ...DEFAULT_LAYOUT_SETTINGS,
+          algorithm:
+            parsed.semantic.diagramMode === 'flowchart'
+              ? 'dagre-hierarchical'
+              : DEFAULT_LAYOUT_SETTINGS.algorithm,
+        };
+        const layoutResult = await computeConceptMapLayout(
+          parsed.semantic,
+          undefined,
+          layoutSettings
+        );
 
         const nextVisual: VisualModel = {
           nodes: layoutResult.nodes,
           edges: layoutResult.edges,
           viewport: { x: 0, y: 0, zoom: 1 },
-          layoutSettings: { ...DEFAULT_LAYOUT_SETTINGS },
+          layoutSettings,
           crossLinkVisibility: 'all',
         };
 
@@ -376,6 +651,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
             createdAt: now,
             updatedAt: now,
             originalColumnCount: 5,
+            diagramMode: state.semantic.diagramMode ?? 'concept-map',
           },
           semantic: state.semantic,
           visual: state.visual,
@@ -396,10 +672,11 @@ export const useConceptMapStore = create<ConceptMapState>()(
 
       restoreDraftFromLocalStorage: (): boolean => {
         try {
-          if (typeof window === 'undefined' || !window.localStorage) {
+          const storage = getLocalStorage();
+          if (!storage) {
             return false;
           }
-          const raw = window.localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+          const raw = storage.getItem(AUTOSAVE_STORAGE_KEY);
           if (!raw) return false;
 
           const doc = JSON.parse(raw) as ConceptMapDocument;
@@ -425,11 +702,22 @@ export const useConceptMapStore = create<ConceptMapState>()(
         set({ hasUnsavedChanges: false, lastSavedAt: savedAt });
       },
 
-      addConcept: (label = 'Novo Conceito', position?: Point2D): ConceptId => {
+      addConcept: (
+        label = 'Novo Conceito',
+        position?: Point2D,
+        shape?: FlowchartNodeShape
+      ): ConceptId => {
         const state = get();
         const cleanLabel = cleanDisplayText(label) || 'Novo Conceito';
         const id = generateUniqueConceptId(cleanLabel, state.semantic.concepts);
-        const dimensions = estimateConceptNodeDimensions(cleanLabel);
+        const actualShape: FlowchartNodeShape =
+          shape ?? (state.semantic.diagramMode === 'flowchart' ? 'process' : 'concept');
+        const dimensions = estimateConceptNodeDimensions(
+          cleanLabel,
+          undefined,
+          false,
+          actualShape
+        );
 
         const targetPos: Point2D = position ?? {
           x: Math.round(250 + (state.semantic.conceptOrder.length % 5) * 60),
@@ -444,6 +732,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               id,
               label: cleanLabel,
               normalizedKey: normalizeConceptKey(cleanLabel),
+              nodeShape: actualShape,
               sourceMeta: {
                 createdManually: true,
               },
@@ -463,6 +752,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               pinned: false,
               customSize: false,
               computedLayer: 0,
+              nodeShape: actualShape,
             },
           },
         };
@@ -490,23 +780,35 @@ export const useConceptMapStore = create<ConceptMapState>()(
 
       addConnectedConcept: (
         sourceId: ConceptId,
-        newConceptLabel = 'Novo Conceito',
-        linkingPhrase = 'relaciona-se com',
-        type: RelationType = 'hierarchical',
-        position?: Point2D
+        newConceptLabel?: string,
+        linkingPhrase?: string,
+        type?: RelationType,
+        position?: Point2D,
+        targetShape?: FlowchartNodeShape
       ) => {
         const state = get();
+        const isFlowchart = state.semantic.diagramMode === 'flowchart';
         const sourceConcept = state.semantic.concepts[sourceId];
         const sourceNodeVis = state.visual.nodes[sourceId];
         if (!sourceConcept || !sourceNodeVis) return null;
 
-        const cleanLabel = cleanDisplayText(newConceptLabel) || 'Novo Conceito';
-        const cleanPhrase = cleanDisplayText(linkingPhrase) || 'relaciona-se com';
+        const defaultLabel = isFlowchart ? 'Nova Etapa' : 'Novo Conceito';
+        const defaultPhrase = isFlowchart ? '' : 'relaciona-se com';
+        const cleanLabel = cleanDisplayText(newConceptLabel ?? defaultLabel) || defaultLabel;
+        const cleanPhrase = cleanDisplayText(linkingPhrase ?? defaultPhrase);
+        const actualType: RelationType = type ?? (isFlowchart ? 'sequence' : 'hierarchical');
+        const actualShape: FlowchartNodeShape = targetShape ?? (isFlowchart ? 'process' : 'concept');
+
         const newConceptId = generateUniqueConceptId(
           cleanLabel,
           state.semantic.concepts
         );
-        const dimensions = estimateConceptNodeDimensions(cleanLabel);
+        const dimensions = estimateConceptNodeDimensions(
+          cleanLabel,
+          undefined,
+          false,
+          actualShape
+        );
 
         // Conta quantos filhos já saem deste nó para distribuir lateralmente sem colisão
         const outgoingCount = state.semantic.relationOrder.filter(
@@ -536,6 +838,25 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const relationId = generateUniqueRelationId(state.semantic.relations);
         const orderIndex = state.semantic.relationOrder.length + 1;
 
+        const flowKind: FlowTransitionKind | undefined = isFlowchart
+          ? actualType === 'conditional'
+            ? 'conditional'
+            : actualType === 'loop-back'
+              ? 'loop-back'
+              : 'sequence'
+          : undefined;
+
+        const rawType =
+          actualType === 'sequence'
+            ? 'sequencial'
+            : actualType === 'conditional'
+              ? 'condicional'
+              : actualType === 'loop-back'
+                ? 'retorno'
+                : actualType === 'hierarchical'
+                  ? 'hierárquica'
+                  : 'ligação cruzada';
+
         const nextSemantic: SemanticModel = {
           ...state.semantic,
           concepts: {
@@ -544,6 +865,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               id: newConceptId,
               label: cleanLabel,
               normalizedKey: normalizeConceptKey(cleanLabel),
+              nodeShape: actualShape,
               sourceMeta: { createdManually: true },
             },
           },
@@ -556,8 +878,9 @@ export const useConceptMapStore = create<ConceptMapState>()(
               sourceId,
               linkingPhrase: cleanPhrase,
               targetId: newConceptId,
-              type,
-              rawType: type === 'hierarchical' ? 'hierárquica' : 'ligação cruzada',
+              type: actualType,
+              flowKind,
+              rawType,
               sourceMeta: { createdManually: true },
             },
           },
@@ -573,6 +896,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
             pinned: false,
             customSize: false,
             computedLayer: (sourceNodeVis.computedLayer ?? 0) + 1,
+            nodeShape: actualShape,
           },
         };
 
@@ -583,14 +907,19 @@ export const useConceptMapStore = create<ConceptMapState>()(
         );
         const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
 
+        const defaultCurve: EdgeCurveType = isFlowchart
+          ? 'smoothstep'
+          : (actualType === 'hierarchical' ? 'smoothstep' : 'bezier');
+
         const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
           ...state.visual.edges,
           [relationId]: {
             relationId,
-            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            curveType: defaultCurve,
             sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
             targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
             labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+            flowKind,
           },
         };
 
@@ -639,12 +968,19 @@ export const useConceptMapStore = create<ConceptMapState>()(
         sourceLabel: string,
         linkingPhrase: string,
         targetLabel: string,
-        type: RelationType = 'hierarchical'
+        type: RelationType = 'hierarchical',
+        sourceShape?: FlowchartNodeShape,
+        targetShape?: FlowchartNodeShape
       ): RelationId | null => {
         const state = get();
-        const cleanSource = cleanDisplayText(sourceLabel);
-        const cleanTarget = cleanDisplayText(targetLabel);
-        const cleanPhrase = cleanDisplayText(linkingPhrase) || 'relaciona-se com';
+        const isFlowchart = state.semantic.diagramMode === 'flowchart';
+
+        const extractedSource = extractShapeFromLabel(sourceLabel);
+        const cleanSource = extractedSource.cleanLabel || cleanDisplayText(sourceLabel);
+        const extractedTarget = extractShapeFromLabel(targetLabel);
+        const cleanTarget = extractedTarget.cleanLabel || cleanDisplayText(targetLabel);
+        const cleanPhrase =
+          cleanDisplayText(linkingPhrase) || (isFlowchart ? '' : 'relaciona-se com');
 
         if (!cleanSource || !cleanTarget) return null;
 
@@ -657,16 +993,29 @@ export const useConceptMapStore = create<ConceptMapState>()(
 
         const sourceKey = normalizeConceptKey(cleanSource);
         let sourceId = findConceptByNormalizedKey(sourceKey);
+        const effectiveSourceShape: FlowchartNodeShape | undefined =
+          sourceShape ??
+          extractedSource.shape ??
+          (isFlowchart ? 'process' : undefined);
 
         if (!sourceId) {
           sourceId = generateUniqueConceptId(cleanSource, nextConcepts);
-          const dims = estimateConceptNodeDimensions(cleanSource);
+          const dims = estimateConceptNodeDimensions(
+            cleanSource,
+            undefined,
+            false,
+            effectiveSourceShape
+          );
           const idx = nextConceptOrder.length;
           nextConcepts[sourceId] = {
             id: sourceId,
             label: cleanSource,
             normalizedKey: sourceKey,
-            sourceMeta: { createdManually: true },
+            nodeShape: effectiveSourceShape,
+            sourceMeta: {
+              createdManually: true,
+              ...(extractedSource.rawShapeTag ? { rawShapeTag: extractedSource.rawShapeTag } : {}),
+            },
           };
           nextConceptOrder.push(sourceId);
           nextNodes[sourceId] = {
@@ -679,15 +1028,42 @@ export const useConceptMapStore = create<ConceptMapState>()(
             pinned: false,
             customSize: false,
             computedLayer: 0,
+            nodeShape: effectiveSourceShape,
           };
+        } else if (effectiveSourceShape && !nextConcepts[sourceId]?.nodeShape) {
+          nextConcepts[sourceId] = {
+            ...nextConcepts[sourceId],
+            nodeShape: effectiveSourceShape,
+          };
+          if (nextNodes[sourceId]) {
+            nextNodes[sourceId] = {
+              ...nextNodes[sourceId],
+              nodeShape: effectiveSourceShape,
+              dimensions: estimateConceptNodeDimensions(
+                cleanSource,
+                nextNodes[sourceId].dimensions,
+                nextNodes[sourceId].customSize,
+                effectiveSourceShape
+              ),
+            };
+          }
         }
 
         const targetKey = normalizeConceptKey(cleanTarget);
         let targetId = findConceptByNormalizedKey(targetKey);
+        const effectiveTargetShape: FlowchartNodeShape | undefined =
+          targetShape ??
+          extractedTarget.shape ??
+          (isFlowchart ? 'process' : undefined);
 
         if (!targetId) {
           targetId = generateUniqueConceptId(cleanTarget, nextConcepts);
-          const dims = estimateConceptNodeDimensions(cleanTarget);
+          const dims = estimateConceptNodeDimensions(
+            cleanTarget,
+            undefined,
+            false,
+            effectiveTargetShape
+          );
           const srcNode = nextNodes[sourceId];
           const outgoingCount = state.semantic.relationOrder.filter(
             (rId) => state.semantic.relations[rId]?.sourceId === sourceId
@@ -703,7 +1079,11 @@ export const useConceptMapStore = create<ConceptMapState>()(
             id: targetId,
             label: cleanTarget,
             normalizedKey: targetKey,
-            sourceMeta: { createdManually: true },
+            nodeShape: effectiveTargetShape,
+            sourceMeta: {
+              createdManually: true,
+              ...(extractedTarget.rawShapeTag ? { rawShapeTag: extractedTarget.rawShapeTag } : {}),
+            },
           };
           nextConceptOrder.push(targetId);
           nextNodes[targetId] = {
@@ -716,7 +1096,25 @@ export const useConceptMapStore = create<ConceptMapState>()(
             pinned: false,
             customSize: false,
             computedLayer: (srcNode?.computedLayer ?? 0) + 1,
+            nodeShape: effectiveTargetShape,
           };
+        } else if (effectiveTargetShape && !nextConcepts[targetId]?.nodeShape) {
+          nextConcepts[targetId] = {
+            ...nextConcepts[targetId],
+            nodeShape: effectiveTargetShape,
+          };
+          if (nextNodes[targetId]) {
+            nextNodes[targetId] = {
+              ...nextNodes[targetId],
+              nodeShape: effectiveTargetShape,
+              dimensions: estimateConceptNodeDimensions(
+                cleanTarget,
+                nextNodes[targetId].dimensions,
+                nextNodes[targetId].customSize,
+                effectiveTargetShape
+              ),
+            };
+          }
         }
 
         const relationId = generateUniqueRelationId(state.semantic.relations);
@@ -753,7 +1151,11 @@ export const useConceptMapStore = create<ConceptMapState>()(
           ...state.visual.edges,
           [relationId]: {
             relationId,
-            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            curveType: isFlowchart
+              ? 'smoothstep'
+              : type === 'hierarchical'
+              ? 'smoothstep'
+              : 'bezier',
             sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
             targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
             labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
@@ -825,7 +1227,8 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const nextDimensions = estimateConceptNodeDimensions(
           sanitizedLabel,
           prevNodeVisual?.dimensions,
-          prevNodeVisual?.customSize
+          prevNodeVisual?.customSize,
+          existing.nodeShape ?? prevNodeVisual?.nodeShape
         );
 
         const nextVisual: VisualModel = {
@@ -907,6 +1310,280 @@ export const useConceptMapStore = create<ConceptMapState>()(
           hasUnsavedChanges: true,
           lastSavedAt: savedAt,
         });
+      },
+
+      updateNodeShape: (conceptId: ConceptId, shape: FlowchartNodeShape) => {
+        const state = get();
+        const concept = state.semantic.concepts[conceptId];
+        const nodeVis = state.visual.nodes[conceptId];
+        if (!concept || !nodeVis) {
+          return;
+        }
+
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          concepts: {
+            ...state.semantic.concepts,
+            [conceptId]: {
+              ...concept,
+              nodeShape: shape,
+            },
+          },
+        };
+
+        const nextDimensions = estimateConceptNodeDimensions(
+          concept.label,
+          nodeVis.dimensions,
+          false,
+          shape
+        );
+
+        const updatedNodes = {
+          ...state.visual.nodes,
+          [conceptId]: {
+            ...nodeVis,
+            nodeShape: shape,
+            dimensions: nextDimensions,
+            customSize: false,
+          },
+        };
+
+        const smartHandles = computeSmartEdgeHandles(
+          nextSemantic,
+          updatedNodes,
+          state.visual.layoutSettings.direction
+        );
+
+        const updatedEdges = { ...state.visual.edges };
+        for (const relId of state.semantic.relationOrder) {
+          const rel = state.semantic.relations[relId];
+          if (rel && (rel.sourceId === conceptId || rel.targetId === conceptId)) {
+            const prevEdge = updatedEdges[relId];
+            const smart = smartHandles[relId];
+            if (prevEdge && smart) {
+              updatedEdges[relId] = {
+                ...prevEdge,
+                sourceHandle: smart.sourceHandle,
+                targetHandle: smart.targetHandle,
+              };
+            }
+          }
+        }
+
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          nodes: updatedNodes,
+          edges: updatedEdges,
+        };
+
+        const savedAt = persistDraftSnapshot(
+          nextSemantic,
+          nextVisual,
+          state.sourceFileName,
+          state.diagnostics
+        );
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          hasUnsavedChanges: true,
+          lastSavedAt: savedAt,
+        });
+      },
+
+      createDecisionBranches: (nodeId: ConceptId) => {
+        const state = get();
+        const sourceConcept = state.semantic.concepts[nodeId];
+        const sourceNodeVis = state.visual.nodes[nodeId];
+        if (!sourceConcept || !sourceNodeVis) {
+          return null;
+        }
+
+        const isHorizontal = state.visual.layoutSettings.direction === 'LR';
+        const simLabel = 'Ação (Sim)';
+        const naoLabel = 'Ação (Não)';
+
+        const simConceptId = generateUniqueConceptId(simLabel, state.semantic.concepts);
+        const nextConceptsWithSim = {
+          ...state.semantic.concepts,
+          [simConceptId]: {
+            id: simConceptId,
+            label: simLabel,
+            normalizedKey: normalizeConceptKey(simLabel),
+            nodeShape: 'process' as FlowchartNodeShape,
+            sourceMeta: { createdManually: true },
+          },
+        };
+
+        const naoConceptId = generateUniqueConceptId(naoLabel, nextConceptsWithSim);
+
+        const simDims = estimateConceptNodeDimensions(simLabel, undefined, false, 'process');
+        const naoDims = estimateConceptNodeDimensions(naoLabel, undefined, false, 'process');
+
+        const simPos: Point2D = isHorizontal
+          ? {
+              x: Math.round(sourceNodeVis.position.x + (sourceNodeVis.dimensions?.width ?? 160) + 120),
+              y: Math.round(sourceNodeVis.position.y),
+            }
+          : {
+              x: Math.round(sourceNodeVis.position.x),
+              y: Math.round(sourceNodeVis.position.y + (sourceNodeVis.dimensions?.height ?? 80) + 130),
+            };
+
+        const naoPos: Point2D = isHorizontal
+          ? {
+              x: Math.round(sourceNodeVis.position.x),
+              y: Math.round(sourceNodeVis.position.y + (sourceNodeVis.dimensions?.height ?? 80) + 120),
+            }
+          : {
+              x: Math.round(sourceNodeVis.position.x + (sourceNodeVis.dimensions?.width ?? 160) + 110),
+              y: Math.round(sourceNodeVis.position.y),
+            };
+
+        const simRelId = generateUniqueRelationId(state.semantic.relations);
+        const existingRelationsWithSim = {
+          ...state.semantic.relations,
+          [simRelId]: {
+            id: simRelId,
+            orderIndex: state.semantic.relationOrder.length + 1,
+            sourceId: nodeId,
+            linkingPhrase: 'Sim',
+            targetId: simConceptId,
+            type: 'conditional' as RelationType,
+            flowKind: 'conditional' as FlowTransitionKind,
+            rawType: 'condicional',
+            sourceMeta: { createdManually: true },
+          },
+        };
+        const naoRelId = generateUniqueRelationId(existingRelationsWithSim);
+
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          concepts: {
+            ...state.semantic.concepts,
+            [nodeId]: {
+              ...sourceConcept,
+              nodeShape: 'decision',
+            },
+            [simConceptId]: {
+              id: simConceptId,
+              label: simLabel,
+              normalizedKey: normalizeConceptKey(simLabel),
+              nodeShape: 'process',
+              sourceMeta: { createdManually: true },
+            },
+            [naoConceptId]: {
+              id: naoConceptId,
+              label: naoLabel,
+              normalizedKey: normalizeConceptKey(naoLabel),
+              nodeShape: 'process',
+              sourceMeta: { createdManually: true },
+            },
+          },
+          conceptOrder: [...state.semantic.conceptOrder, simConceptId, naoConceptId],
+          relations: {
+            ...state.semantic.relations,
+            [simRelId]: existingRelationsWithSim[simRelId],
+            [naoRelId]: {
+              id: naoRelId,
+              orderIndex: state.semantic.relationOrder.length + 2,
+              sourceId: nodeId,
+              linkingPhrase: 'Não',
+              targetId: naoConceptId,
+              type: 'conditional',
+              flowKind: 'conditional',
+              rawType: 'condicional',
+              sourceMeta: { createdManually: true },
+            },
+          },
+          relationOrder: [...state.semantic.relationOrder, simRelId, naoRelId],
+        };
+
+        const nextNodes: Record<ConceptId, ConceptNodeVisual> = {
+          ...state.visual.nodes,
+          [nodeId]: {
+            ...sourceNodeVis,
+            nodeShape: 'decision',
+            dimensions:
+              sourceNodeVis.nodeShape === 'decision'
+                ? sourceNodeVis.dimensions
+                : estimateConceptNodeDimensions(
+                    sourceConcept.label,
+                    sourceNodeVis.dimensions,
+                    false,
+                    'decision'
+                  ),
+          },
+          [simConceptId]: {
+            conceptId: simConceptId,
+            position: simPos,
+            dimensions: simDims,
+            pinned: false,
+            customSize: false,
+            computedLayer: (sourceNodeVis.computedLayer ?? 0) + 1,
+            nodeShape: 'process',
+          },
+          [naoConceptId]: {
+            conceptId: naoConceptId,
+            position: naoPos,
+            dimensions: naoDims,
+            pinned: false,
+            customSize: false,
+            computedLayer: sourceNodeVis.computedLayer ?? 0,
+            nodeShape: 'process',
+          },
+        };
+
+        const nextEdges: Record<RelationId, VisualModel['edges'][string]> = {
+          ...state.visual.edges,
+          [simRelId]: {
+            relationId: simRelId,
+            curveType: 'smoothstep',
+            sourceHandle: isHorizontal ? 'right' : 'bottom',
+            targetHandle: isHorizontal ? 'left' : 'top',
+            labelOffset: { t: 0.5 },
+            flowKind: 'conditional',
+          },
+          [naoRelId]: {
+            relationId: naoRelId,
+            curveType: 'smoothstep',
+            sourceHandle: isHorizontal ? 'bottom' : 'right',
+            targetHandle: isHorizontal ? 'top' : 'top',
+            labelOffset: { t: 0.5 },
+            flowKind: 'conditional',
+          },
+        };
+
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          nodes: nextNodes,
+          edges: nextEdges,
+        };
+
+        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
+        const savedAt = persistDraftSnapshot(
+          nextSemantic,
+          nextVisual,
+          state.sourceFileName,
+          state.diagnostics
+        );
+
+        set({
+          semantic: nextSemantic,
+          visual: nextVisual,
+          metrics: nextMetrics,
+          hasUnsavedChanges: true,
+          lastSavedAt: savedAt,
+          selectedNodeIds: [simConceptId, naoConceptId],
+          selectedEdgeIds: [simRelId, naoRelId],
+        });
+
+        return {
+          simConceptId,
+          naoConceptId,
+          simRelationId: simRelId,
+          naoRelationId: naoRelId,
+        };
       },
 
       moveNodes: (
@@ -1011,7 +1688,12 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const prev = state.visual.nodes[conceptId];
         if (!concept || !prev) return;
 
-        const autoDims = estimateConceptNodeDimensions(concept.label);
+        const autoDims = estimateConceptNodeDimensions(
+          concept.label,
+          undefined,
+          false,
+          concept.nodeShape ?? prev.nodeShape
+        );
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: {
@@ -1134,7 +1816,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
       addRelation: (
         sourceId: ConceptId,
         targetId: ConceptId,
-        linkingPhrase = 'relaciona-se com',
+        linkingPhrase?: string,
         type: RelationType = 'hierarchical',
         handles?: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition }
       ): RelationId | null => {
@@ -1143,9 +1825,32 @@ export const useConceptMapStore = create<ConceptMapState>()(
           return null;
         }
 
+        const isFlowchart = state.semantic.diagramMode === 'flowchart';
         const relationId = generateUniqueRelationId(state.semantic.relations);
         const orderIndex = state.semantic.relationOrder.length + 1;
-        const cleanPhrase = cleanDisplayText(linkingPhrase) || 'relaciona-se com';
+        const defaultPhrase = isFlowchart ? '' : 'relaciona-se com';
+        const cleanPhrase = cleanDisplayText(linkingPhrase ?? defaultPhrase);
+        const actualType: RelationType =
+          isFlowchart && type === 'hierarchical' ? 'sequence' : type;
+
+        const flowKind: FlowTransitionKind | undefined = isFlowchart
+          ? actualType === 'conditional'
+            ? 'conditional'
+            : actualType === 'loop-back'
+              ? 'loop-back'
+              : 'sequence'
+          : undefined;
+
+        const rawType =
+          actualType === 'sequence'
+            ? 'sequencial'
+            : actualType === 'conditional'
+              ? 'condicional'
+              : actualType === 'loop-back'
+                ? 'retorno'
+                : actualType === 'hierarchical'
+                  ? 'hierárquica'
+                  : 'ligação cruzada';
 
         const nextSemantic: SemanticModel = {
           ...state.semantic,
@@ -1157,8 +1862,9 @@ export const useConceptMapStore = create<ConceptMapState>()(
               sourceId,
               linkingPhrase: cleanPhrase,
               targetId,
-              type,
-              rawType: type === 'hierarchical' ? 'hierárquica' : 'ligação cruzada',
+              type: actualType,
+              flowKind,
+              rawType,
               sourceMeta: {
                 createdManually: true,
               },
@@ -1174,16 +1880,21 @@ export const useConceptMapStore = create<ConceptMapState>()(
         );
         const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
 
+        const defaultCurve: EdgeCurveType = isFlowchart
+          ? 'smoothstep'
+          : (actualType === 'hierarchical' ? 'smoothstep' : 'bezier');
+
         const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
           ...state.visual.edges,
           [relationId]: {
             relationId,
-            curveType: type === 'hierarchical' ? 'smoothstep' : 'bezier',
+            curveType: defaultCurve,
             sourceHandle:
               handles?.sourceHandle ?? smartHandles[relationId]?.sourceHandle ?? 'bottom',
             targetHandle:
               handles?.targetHandle ?? smartHandles[relationId]?.targetHandle ?? 'top',
             labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+            flowKind,
           },
         };
 
@@ -1232,6 +1943,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const existingEdge = state.visual.edges[relationId];
         if (!existingRel || !existingEdge) return;
 
+        const isFlowchart = state.semantic.diagramMode === 'flowchart';
         const nextType = updates.type ?? existingRel.type;
         const nextSourceId =
           updates.sourceId && state.semantic.concepts[updates.sourceId]
@@ -1247,6 +1959,25 @@ export const useConceptMapStore = create<ConceptMapState>()(
             ? updates.linkingPhrase.replace(/\r?\n/g, ' ')
             : existingRel.linkingPhrase;
 
+        const flowKind: FlowTransitionKind | undefined = isFlowchart
+          ? nextType === 'conditional'
+            ? 'conditional'
+            : nextType === 'loop-back'
+              ? 'loop-back'
+              : 'sequence'
+          : undefined;
+
+        const rawType =
+          nextType === 'sequence'
+            ? 'sequencial'
+            : nextType === 'conditional'
+              ? 'condicional'
+              : nextType === 'loop-back'
+                ? 'retorno'
+                : nextType === 'hierarchical'
+                  ? 'hierárquica'
+                  : 'ligação cruzada';
+
         const nextSemantic: SemanticModel = {
           ...state.semantic,
           relations: {
@@ -1257,7 +1988,8 @@ export const useConceptMapStore = create<ConceptMapState>()(
               targetId: nextTargetId,
               linkingPhrase: nextPhrase,
               type: nextType,
-              rawType: nextType === 'hierarchical' ? 'hierárquica' : 'ligação cruzada',
+              flowKind,
+              rawType,
             },
           },
         };
@@ -1268,13 +2000,13 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.layoutSettings.direction
         );
 
+        const defaultCurveForType: EdgeCurveType = isFlowchart
+          ? 'smoothstep'
+          : (nextType === 'hierarchical' ? 'smoothstep' : 'bezier');
+
         const nextCurveType =
           updates.curveType ??
-          (updates.type
-            ? updates.type === 'hierarchical'
-              ? 'smoothstep'
-              : 'bezier'
-            : existingEdge.curveType);
+          (updates.type ? defaultCurveForType : existingEdge.curveType);
 
         const nextVisual: VisualModel = {
           ...state.visual,
@@ -1294,6 +2026,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
               labelOffset: updates.labelOffset
                 ? { ...existingEdge.labelOffset, ...updates.labelOffset }
                 : existingEdge.labelOffset,
+              flowKind: flowKind ?? existingEdge.flowKind,
             },
           },
         };

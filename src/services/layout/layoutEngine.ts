@@ -15,6 +15,7 @@ import type {
   ConceptNodeVisual,
   ConceptRelationVisual,
   Dimensions2D,
+  EdgeCurveType,
   HandlePosition,
   LayoutSettings,
   Point2D,
@@ -42,10 +43,66 @@ export interface LayoutComputationResult {
   edges: Record<RelationId, ConceptRelationVisual>;
 }
 
+function normalizeConditionText(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+const AFFIRMATIVE_CONDITION_KEYS = new Set([
+  'sim',
+  'yes',
+  'true',
+  'verdadeiro',
+  's',
+  'y',
+  'v',
+  'positivo',
+  'ok',
+  'sucesso',
+  'aprovado',
+  'valido',
+]);
+
+const NEGATIVE_CONDITION_KEYS = new Set([
+  'nao',
+  'no',
+  'false',
+  'falso',
+  'n',
+  'f',
+  'negativo',
+  'rejeitado',
+  'reprovado',
+  'erro',
+  'falha',
+  'invalido',
+]);
+
+const RETURN_KEYWORD_REGEX =
+  /(retorno|voltar|repetir|loop|refazer|reenviar|reprocessar|retroagir|novamente)/i;
+
+function isAffirmativeCondition(linkingPhrase: string): boolean {
+  const norm = normalizeConditionText(linkingPhrase);
+  return AFFIRMATIVE_CONDITION_KEYS.has(norm);
+}
+
+function isNegativeCondition(linkingPhrase: string): boolean {
+  const norm = normalizeConditionText(linkingPhrase);
+  return NEGATIVE_CONDITION_KEYS.has(norm);
+}
+
+function isReturnCondition(linkingPhrase: string): boolean {
+  return RETURN_KEYWORD_REGEX.test(linkingPhrase.trim());
+}
+
 /**
  * Seleciona automaticamente as portas (handles) de origem e destino de cada conexão
  * diferenciando relações `hierarchical` (fluxo principal vertical/horizontal) de
- * `cross-link` (saída lateral ou arco para evitar cruzar o centro dos nós).
+ * `cross-link` (saída lateral ou arco para evitar cruzar o centro dos nós),
+ * e tratando especificamente nós de decisão (`decision`), ramos Sim/Não e laços de retorno.
  */
 export function computeSmartEdgeHandles(
   semantic: SemanticModel,
@@ -56,6 +113,8 @@ export function computeSmartEdgeHandles(
     RelationId,
     { sourceHandle: HandlePosition; targetHandle: HandlePosition }
   > = {};
+
+  const isFlowchartDiagram = semantic.diagramMode === 'flowchart';
 
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
@@ -85,6 +144,98 @@ export function computeSmartEdgeHandles(
     const dx = tgtCenter.x - srcCenter.x;
     const dy = tgtCenter.y - srcCenter.y;
 
+    const srcConcept = semantic.concepts[rel.sourceId];
+    const srcShape = srcConcept?.nodeShape ?? srcNode.nodeShape ?? 'concept';
+
+    const isExplicitLoop =
+      rel.type === 'loop-back' ||
+      rel.flowKind === 'loop-back' ||
+      isReturnCondition(rel.linkingPhrase);
+
+    const isGeometricReturn = direction === 'TB' ? dy < -20 : dx < -20;
+    const isLoopBack =
+      (isFlowchartDiagram || srcShape === 'decision') &&
+      (isExplicitLoop || isGeometricReturn);
+
+    // ------------------------------------------------------------------------
+    // RAMO 1: NÓ DE ORIGEM É DECISÃO (LOSANGO / DIAMOND)
+    // ------------------------------------------------------------------------
+    if (srcShape === 'decision') {
+      if (direction === 'TB') {
+        if (isLoopBack) {
+          // Retorno / loop a partir de decisão: sai pela lateral e entra por lateral/topo
+          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
+          const targetHandle: HandlePosition =
+            Math.abs(dx) > 60 ? 'top' : dx >= 0 ? 'right' : 'left';
+          result[relId] = { sourceHandle, targetHandle };
+        } else if (isNegativeCondition(rel.linkingPhrase)) {
+          // Ramo negativo ("Não", etc.): sai pela lateral
+          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
+          const targetHandle: HandlePosition =
+            dy > 30 ? 'top' : dx >= 0 ? 'left' : 'right';
+          result[relId] = { sourceHandle, targetHandle };
+        } else if (isAffirmativeCondition(rel.linkingPhrase)) {
+          // Ramo afirmativo ("Sim", etc.): sai pelo fundo
+          result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
+        } else {
+          // Condição arbitrária ou sem rótulo
+          if (Math.abs(dx) <= 30 && dy > 0) {
+            result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
+          } else {
+            const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
+            const targetHandle: HandlePosition =
+              dy > 30 ? 'top' : dx >= 0 ? 'left' : 'right';
+            result[relId] = { sourceHandle, targetHandle };
+          }
+        }
+      } else {
+        // Layout horizontal (LR) para decisão
+        if (isLoopBack) {
+          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
+          const targetHandle: HandlePosition =
+            Math.abs(dy) > 50 ? 'left' : dy >= 0 ? 'bottom' : 'top';
+          result[relId] = { sourceHandle, targetHandle };
+        } else if (isNegativeCondition(rel.linkingPhrase)) {
+          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
+          const targetHandle: HandlePosition =
+            dx > 30 ? 'left' : dy >= 0 ? 'top' : 'bottom';
+          result[relId] = { sourceHandle, targetHandle };
+        } else {
+          result[relId] = { sourceHandle: 'right', targetHandle: 'left' };
+        }
+      }
+      continue;
+    }
+
+    // ------------------------------------------------------------------------
+    // RAMO 2: MODO FLUXOGRAMA (NÓS QUE NÃO SÃO DECISÃO)
+    // ------------------------------------------------------------------------
+    if (isFlowchartDiagram) {
+      if (direction === 'TB') {
+        if (isLoopBack) {
+          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
+          const targetHandle: HandlePosition =
+            Math.abs(dx) > 60 ? 'top' : dx >= 0 ? 'right' : 'left';
+          result[relId] = { sourceHandle, targetHandle };
+        } else {
+          result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
+        }
+      } else {
+        if (isLoopBack) {
+          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
+          const targetHandle: HandlePosition =
+            Math.abs(dy) > 50 ? 'left' : dy >= 0 ? 'bottom' : 'top';
+          result[relId] = { sourceHandle, targetHandle };
+        } else {
+          result[relId] = { sourceHandle: 'right', targetHandle: 'left' };
+        }
+      }
+      continue;
+    }
+
+    // ------------------------------------------------------------------------
+    // RAMO 3: MAPA CONCEITUAL DE NOVAK (100% RETROCOMPATÍVEL)
+    // ------------------------------------------------------------------------
     if (rel.type === 'hierarchical') {
       if (direction === 'TB') {
         if (dy >= -20) {
@@ -324,10 +475,16 @@ function runNovakBackboneLayout(
     g.setNode(id, { width: dim.width, height: dim.height });
   }
 
+  const isBackboneEdge = (rel: (typeof semantic.relations)[string]) =>
+    rel.type === 'hierarchical' ||
+    (semantic.diagramMode === 'flowchart' &&
+      (rel.type === 'sequence' ||
+        (rel.type === 'conditional' && rel.flowKind !== 'loop-back')));
+
   const nodesWithHierarchicalEdge = new Set<ConceptId>();
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
-    if (rel && rel.type === 'hierarchical') {
+    if (rel && isBackboneEdge(rel)) {
       nodesWithHierarchicalEdge.add(rel.sourceId);
       nodesWithHierarchicalEdge.add(rel.targetId);
       const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
@@ -403,7 +560,10 @@ async function runElkLayeredLayout(
     .filter((rel): rel is NonNullable<typeof rel> => Boolean(rel))
     .map((rel) => {
       const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
-      const isHier = rel.type === 'hierarchical';
+      const isForward =
+        rel.type === 'hierarchical' ||
+        rel.type === 'sequence' ||
+        (rel.type === 'conditional' && rel.flowKind !== 'loop-back');
       return {
         id: rel.id,
         sources: [rel.sourceId],
@@ -416,9 +576,9 @@ async function runElkLayeredLayout(
           },
         ],
         layoutOptions: {
-          'elk.layered.priority.direction': isHier ? '10' : '0',
-          'elk.layered.priority.shortness': isHier ? '8' : '1',
-          'elk.layered.priority.straightness': isHier ? '8' : '1',
+          'elk.layered.priority.direction': isForward ? '10' : '0',
+          'elk.layered.priority.shortness': isForward ? '8' : '1',
+          'elk.layered.priority.straightness': isForward ? '8' : '1',
         },
       };
     });
@@ -481,13 +641,19 @@ function runDagreFullLayout(
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
     if (!rel) continue;
-    const isHier = rel.type === 'hierarchical';
+    const isForward =
+      rel.type === 'hierarchical' ||
+      rel.type === 'sequence' ||
+      (rel.type === 'conditional' && rel.flowKind !== 'loop-back');
+    const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
     g.setEdge(
       rel.sourceId,
       rel.targetId,
       {
-        weight: isHier ? 6 : 1,
+        weight: isForward ? 6 : 1,
         minlen: 1,
+        width: labelDim.width,
+        height: labelDim.height,
       },
       rel.id
     );
@@ -666,10 +832,12 @@ export async function computeConceptMapLayout(
   for (const id of semantic.conceptOrder) {
     const concept = semantic.concepts[id];
     const existingNode = existingVisual?.nodes[id];
+    const shape = concept?.nodeShape ?? existingNode?.nodeShape;
     dimsById[id] = estimateConceptNodeDimensions(
       concept.label,
       existingNode?.dimensions,
-      existingNode?.customSize
+      existingNode?.customSize,
+      shape
     );
   }
 
@@ -714,6 +882,8 @@ export async function computeConceptMapLayout(
   const nextNodes: Record<ConceptId, ConceptNodeVisual> = {};
   for (const id of semantic.conceptOrder) {
     const prevNode = existingVisual?.nodes[id];
+    const concept = semantic.concepts[id];
+    const shape = concept?.nodeShape ?? prevNode?.nodeShape;
     const keepPinnedPosition = Boolean(
       settings.respectPinnedNodes && prevNode?.pinned
     );
@@ -728,6 +898,7 @@ export async function computeConceptMapLayout(
       customSize: prevNode?.customSize ?? false,
       computedLayer: metrics.hierarchicalDepthById[id] ?? 0,
       style: prevNode?.style,
+      nodeShape: shape,
     };
   }
 
@@ -760,17 +931,23 @@ export async function computeConceptMapLayout(
     const hasCustomOffset =
       prevEdge?.labelOffset?.t !== undefined && prevEdge.labelOffset.t !== 0.5;
 
+    const defaultCurve: EdgeCurveType =
+      semantic.diagramMode === 'flowchart'
+        ? 'smoothstep'
+        : rel.type === 'hierarchical'
+          ? 'smoothstep'
+          : 'bezier';
+
     nextEdges[relId] = {
       relationId: relId,
-      curveType:
-        prevEdge?.curveType ??
-        (rel.type === 'hierarchical' ? 'smoothstep' : 'bezier'),
+      curveType: prevEdge?.curveType ?? defaultCurve,
       sourceHandle: handles.sourceHandle,
       targetHandle: handles.targetHandle,
       labelOffset: hasCustomOffset
         ? prevEdge!.labelOffset
         : labelOffsets[relId] ?? { t: 0.5 },
       style: prevEdge?.style,
+      flowKind: rel.flowKind ?? prevEdge?.flowKind,
     };
   }
 

@@ -7,13 +7,16 @@ import {
 import type {
   ConceptId,
   ConceptMapDocument,
+  FlowchartNodeShape,
   HandlePosition,
   Point2D,
+  RelationType,
   SemanticModel,
   VisualModel,
 } from '../../domain/types';
 import { estimateEdgeLabelDimensions } from '../layout/nodeSizing';
 import { serializeSemanticModelToMarkdown } from '../parser/markdownSerializer';
+import { useConceptMapStore } from '../../store/useConceptMapStore';
 
 /**
  * Escapa caracteres especiais XML/SVG (&, <, >, ", ') para garantir XML válido.
@@ -94,6 +97,7 @@ interface PreparedEdgeLabel {
   relId: string;
   phrase: string;
   isCross: boolean;
+  relType: RelationType;
   lx: number;
   ly: number;
   srcPt: Point2D;
@@ -101,6 +105,168 @@ interface PreparedEdgeLabel {
   width: number;
   height: number;
   lines: string[];
+}
+
+/**
+ * Renderiza elementos SVG vetoriais autênticos para as 6 formas de nós de fluxograma e conceitos Novak.
+ */
+export function renderNodeShapeSvg(
+  shape: FlowchartNodeShape,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  bg: string,
+  border: string,
+  strokeW: number
+): string {
+  switch (shape) {
+    case 'terminal': {
+      const rx = (h / 2).toFixed(1);
+      const ry = (h / 2).toFixed(1);
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="${rx}" ry="${ry}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'process': {
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="6" ry="6" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'decision': {
+      const topX = (x + w / 2).toFixed(1);
+      const topY = y.toFixed(1);
+      const rightX = (x + w).toFixed(1);
+      const rightY = (y + h / 2).toFixed(1);
+      const bottomX = (x + w / 2).toFixed(1);
+      const bottomY = (y + h).toFixed(1);
+      const leftX = x.toFixed(1);
+      const leftY = (y + h / 2).toFixed(1);
+      const points = `${topX},${topY} ${rightX},${rightY} ${bottomX},${bottomY} ${leftX},${leftY}`;
+      return `<polygon points="${points}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'io': {
+      const skew = Math.min(24, Math.max(14, Math.round(w * 0.12)));
+      const p1 = `${(x + skew).toFixed(1)},${y.toFixed(1)}`;
+      const p2 = `${(x + w).toFixed(1)},${y.toFixed(1)}`;
+      const p3 = `${(x + w - skew).toFixed(1)},${(y + h).toFixed(1)}`;
+      const p4 = `${x.toFixed(1)},${(y + h).toFixed(1)}`;
+      const points = `${p1} ${p2} ${p3} ${p4}`;
+      return `<polygon points="${points}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'subroutine': {
+      const barInset = 12;
+      const x1 = (x + barInset).toFixed(1);
+      const x2 = (x + w - barInset).toFixed(1);
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="6" ry="6" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
+      <line x1="${x1}" y1="${y.toFixed(1)}" x2="${x1}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
+      <line x1="${x2}" y1="${y.toFixed(1)}" x2="${x2}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'document': {
+      const wave = 10;
+      const pTopLeft = `${x.toFixed(1)} ${y.toFixed(1)}`;
+      const pTopRight = `${(x + w).toFixed(1)} ${y.toFixed(1)}`;
+      const pRightBottom = `${(x + w).toFixed(1)} ${(y + h - wave).toFixed(1)}`;
+      const cp1X = (x + w * 0.75).toFixed(1);
+      const cp1Y = (y + h + wave * 0.8).toFixed(1);
+      const cp2X = (x + w * 0.6).toFixed(1);
+      const cp2Y = (y + h + wave * 0.8).toFixed(1);
+      const midX = (x + w * 0.5).toFixed(1);
+      const midY = (y + h - wave * 0.2).toFixed(1);
+      const cp3X = (x + w * 0.4).toFixed(1);
+      const cp3Y = (y + h - wave * 1.5).toFixed(1);
+      const cp4X = (x + w * 0.25).toFixed(1);
+      const cp4Y = (y + h - wave * 1.5).toFixed(1);
+      const pLeftBottom = `${x.toFixed(1)} ${(y + h - wave).toFixed(1)}`;
+
+      const d = `M ${pTopLeft} L ${pTopRight} L ${pRightBottom} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${midX} ${midY} C ${cp3X} ${cp3Y}, ${cp4X} ${cp4Y}, ${pLeftBottom} Z`;
+      return `<path d="${d}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+
+    case 'concept':
+    default: {
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="12" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+    }
+  }
+}
+
+/**
+ * Retorna paleta de cores para pílulas de aresta em SVG exportado.
+ */
+function getEdgeLabelPalette(
+  phrase: string,
+  relType: RelationType,
+  isFlowchart: boolean
+): { bg: string; border: string; text: string; fontWeight: string } {
+  if (!isFlowchart) {
+    const isCross = relType === 'cross-link';
+    return {
+      bg: isCross ? '#fffbeb' : '#ffffff',
+      border: isCross ? '#f59e0b' : '#cbd5e1',
+      text: isCross ? '#92400e' : '#1e293b',
+      fontWeight: '500',
+    };
+  }
+
+  const norm = phrase.trim().toLowerCase();
+  const isYes =
+    norm === 'sim' ||
+    norm === 'yes' ||
+    norm === 'true' ||
+    norm === 's' ||
+    norm === 'v';
+
+  const isNo =
+    norm === 'não' ||
+    norm === 'nao' ||
+    norm === 'no' ||
+    norm === 'false' ||
+    norm === 'n' ||
+    norm === 'f';
+
+  if (isYes) {
+    return {
+      bg: '#f0fdf4',
+      border: '#22c55e',
+      text: '#15803d',
+      fontWeight: '600',
+    };
+  }
+
+  if (isNo) {
+    return {
+      bg: '#fef2f2',
+      border: '#ef4444',
+      text: '#b91c1c',
+      fontWeight: '600',
+    };
+  }
+
+  if (relType === 'conditional') {
+    return {
+      bg: '#fefce8',
+      border: '#eab308',
+      text: '#854d0e',
+      fontWeight: '600',
+    };
+  }
+
+  if (relType === 'loop-back') {
+    return {
+      bg: '#f8fafc',
+      border: '#94a3b8',
+      text: '#334155',
+      fontWeight: '500',
+    };
+  }
+
+  return {
+    bg: '#ffffff',
+    border: '#cbd5e1',
+    text: '#1e293b',
+    fontWeight: '500',
+  };
 }
 
 /**
@@ -299,9 +465,40 @@ export function generateStandaloneVectorSvg(
       baseLabelY = ly;
     }
 
-    const stroke = isCross ? '#d97706' : '#475569';
-    const dashAttr = isCross ? ' stroke-dasharray="8 5"' : '';
-    const markerId = isCross ? 'url(#arrow-cross)' : 'url(#arrow-hier)';
+    const isFlowchart = semantic.diagramMode === 'flowchart';
+    const norm = (rel.linkingPhrase || '').trim().toLowerCase();
+    const isYes =
+      isFlowchart &&
+      (norm === 'sim' ||
+        norm === 'yes' ||
+        norm === 'true' ||
+        norm === 's' ||
+        norm === 'v');
+    const isNo =
+      isFlowchart &&
+      (norm === 'não' ||
+        norm === 'nao' ||
+        norm === 'no' ||
+        norm === 'false' ||
+        norm === 'n' ||
+        norm === 'f');
+
+    const stroke = isCross
+      ? '#d97706'
+      : isYes
+        ? '#059669'
+        : isNo
+          ? '#e11d48'
+          : '#475569';
+    const dashAttr =
+      isCross || rel.type === 'loop-back' ? ' stroke-dasharray="8 5"' : '';
+    const markerId = isCross
+      ? 'url(#arrow-cross)'
+      : isYes
+        ? 'url(#arrow-yes)'
+        : isNo
+          ? 'url(#arrow-no)'
+          : 'url(#arrow-hier)';
 
     edgePathsSvg.push(
       `    <path id="edge-${escapeXml(rel.id)}" d="${path}" fill="none" stroke="${stroke}" stroke-width="2"${dashAttr} marker-end="${markerId}" />`
@@ -314,21 +511,27 @@ export function generateStandaloneVectorSvg(
     const ly = baseLabelY + (tgtPt.y - srcPt.y) * tDelta * 0.55;
 
     const phrase = rel.linkingPhrase || '';
-    const labelDim = estimateEdgeLabelDimensions(phrase);
-    const lines = wrapTextLines(phrase, 22);
+    const hasLabel = phrase.trim().length > 0;
 
-    preparedLabels.push({
-      relId: rel.id,
-      phrase,
-      isCross,
-      lx,
-      ly,
-      srcPt,
-      tgtPt,
-      width: labelDim.width,
-      height: labelDim.height,
-      lines,
-    });
+    // Em modo fluxograma, transições sem texto não geram pílula
+    if (!isFlowchart || hasLabel) {
+      const labelDim = estimateEdgeLabelDimensions(phrase);
+      const lines = wrapTextLines(phrase, 22);
+
+      preparedLabels.push({
+        relId: rel.id,
+        phrase,
+        isCross,
+        relType: rel.type,
+        lx,
+        ly,
+        srcPt,
+        tgtPt,
+        width: labelDim.width,
+        height: labelDim.height,
+        lines,
+      });
+    }
   }
 
   // Resolve qualquer sobreposição residual entre pílulas de frases de ligação
@@ -336,9 +539,8 @@ export function generateStandaloneVectorSvg(
 
   const edgeLabelsSvg: string[] = [];
   for (const item of preparedLabels) {
-    const pillBg = item.isCross ? '#fffbeb' : '#ffffff';
-    const pillBorder = item.isCross ? '#f59e0b' : '#cbd5e1';
-    const pillText = item.isCross ? '#92400e' : '#1e293b';
+    const isFlowchart = semantic.diagramMode === 'flowchart';
+    const palette = getEdgeLabelPalette(item.phrase, item.relType, isFlowchart);
 
     const rectX = item.lx - item.width / 2;
     const rectY = item.ly - item.height / 2;
@@ -362,8 +564,8 @@ export function generateStandaloneVectorSvg(
 
     edgeLabelsSvg.push(
       `    <g class="edge-label" data-relation-id="${escapeXml(item.relId)}">
-      <rect x="${rectX.toFixed(1)}" y="${rectY.toFixed(1)}" width="${item.width}" height="${item.height}" rx="6" fill="${pillBg}" stroke="${pillBorder}" stroke-width="1" />
-      <text text-anchor="middle" fill="${pillText}" font-family="Inter, system-ui, Ubuntu, sans-serif" font-size="11.5" font-weight="500">${tspans}</text>
+      <rect x="${rectX.toFixed(1)}" y="${rectY.toFixed(1)}" width="${item.width}" height="${item.height}" rx="6" fill="${palette.bg}" stroke="${palette.border}" stroke-width="1" />
+      <text text-anchor="middle" fill="${palette.text}" font-family="Inter, system-ui, Ubuntu, sans-serif" font-size="11.5" font-weight="${palette.fontWeight}">${tspans}</text>
     </g>`
     );
   }
@@ -374,6 +576,7 @@ export function generateStandaloneVectorSvg(
   const viewBoxW = Math.ceil(maxX - minX + padding * 2);
   const viewBoxH = Math.ceil(maxY - minY + padding * 2);
 
+  const isFlowchart = semantic.diagramMode === 'flowchart';
   const nodesSvg: string[] = [];
   for (const id of conceptIds) {
     const concept = semantic.concepts[id];
@@ -383,29 +586,129 @@ export function generateStandaloneVectorSvg(
     const x = nodeVis.position.x;
     const y = nodeVis.position.y;
 
-    const isRoot = (nodeVis.computedLayer ?? 1) === 0;
-    const bg =
-      nodeVis.style?.backgroundColor ?? (isRoot ? '#eff6ff' : '#ffffff');
-    const border =
-      nodeVis.style?.borderColor ?? (isRoot ? '#2563eb' : '#cbd5e1');
-    const textColor = nodeVis.style?.textColor ?? '#0f172a';
-    const strokeW = isRoot ? 2.5 : 1.5;
+    let shape: FlowchartNodeShape =
+      nodeVis.nodeShape ??
+      concept?.nodeShape ??
+      (isFlowchart ? 'process' : 'concept');
 
-    const maxChars = Math.max(12, Math.floor((w - 24) / 7.5));
+    if (!nodeVis.nodeShape && (!concept?.nodeShape || concept.nodeShape === 'concept')) {
+      try {
+        const live = useConceptMapStore.getState();
+        const liveShape =
+          live.visual?.nodes?.[id]?.nodeShape ??
+          live.semantic?.concepts?.[id]?.nodeShape;
+        if (liveShape && liveShape !== 'concept') {
+          shape = liveShape;
+        }
+      } catch {
+        // useConceptMapStore not available in this environment
+      }
+    }
+
+    const isRoot = (nodeVis.computedLayer ?? 1) === 0;
+
+    // Paleta padrão adaptada ao formato do nó se não houver estilo personalizado
+    let defaultBg = isRoot ? '#eff6ff' : '#ffffff';
+    let defaultBorder = isRoot ? '#2563eb' : '#cbd5e1';
+    let defaultText = '#0f172a';
+    let strokeW = isRoot ? 2.5 : 1.5;
+
+    if (isFlowchart || shape !== 'concept') {
+      if (shape === 'terminal') {
+        const isStart =
+          /in[ií]cio|start|come[çc]o/i.test(concept.label) || isRoot;
+        const isEnd = /fim|end|conclus|termin/i.test(concept.label);
+        if (isStart) {
+          defaultBg = '#ecfdf5';
+          defaultBorder = '#10b981';
+          defaultText = '#064e3b';
+          strokeW = 2;
+        } else if (isEnd) {
+          defaultBg = '#fff1f2';
+          defaultBorder = '#f43f5e';
+          defaultText = '#881337';
+          strokeW = 2;
+        }
+      } else if (shape === 'decision') {
+        defaultBg = '#fffbeb';
+        defaultBorder = '#d97706';
+        defaultText = '#78350f';
+        strokeW = 2;
+      } else if (shape === 'io') {
+        defaultBg = '#f0f9ff';
+        defaultBorder = '#0284c7';
+        defaultText = '#082f49';
+        strokeW = 1.75;
+      } else if (shape === 'subroutine') {
+        defaultBg = '#ffffff';
+        defaultBorder = '#6366f1';
+        defaultText = '#1e1b4b';
+        strokeW = 1.75;
+      } else if (shape === 'document') {
+        defaultBg = '#fffbeb';
+        defaultBorder = '#d97706';
+        defaultText = '#78350f';
+        strokeW = 1.75;
+      } else if (shape === 'process') {
+        defaultBg = '#ffffff';
+        defaultBorder = '#64748b';
+        defaultText = '#1e293b';
+        strokeW = 1.5;
+      }
+    }
+
+    const bg = nodeVis.style?.backgroundColor ?? defaultBg;
+    const border = nodeVis.style?.borderColor ?? defaultBorder;
+    const textColor = nodeVis.style?.textColor ?? defaultText;
+
+    // Ajuste de largura útil e quebra de linha de acordo com a geometria da forma
+    let usableWidth = w - 24;
+    if (shape === 'decision') {
+      usableWidth = w * 0.65;
+    } else if (shape === 'terminal') {
+      usableWidth = w - h * 0.6 - 16;
+    } else if (shape === 'io') {
+      usableWidth = w - 48;
+    } else if (shape === 'subroutine') {
+      usableWidth = w - 44;
+    }
+    const maxChars = Math.max(10, Math.floor(usableWidth / 7.5));
     const lines = wrapTextLines(concept.label, maxChars);
     const centerX = x + w / 2;
+
+    const lineHeight = shape === 'decision' ? 16 : 17;
+    const totalTextH = lines.length * lineHeight;
+    let startY = y + 18 + (h - lines.length * 17) / 2 - 4;
+    if (shape === 'decision') {
+      startY = y + (h - totalTextH) / 2 + 13;
+    } else if (shape === 'document') {
+      startY = y + (h - 10 - totalTextH) / 2 + 12;
+    }
 
     const tspans = lines
       .map((line, i) => {
         const lineY =
-          y + 18 + i * 17 + (h - lines.length * 17) / 2 - 4;
+          shape === 'concept'
+            ? y + 18 + i * 17 + (h - lines.length * 17) / 2 - 4
+            : startY + i * lineHeight;
         return `<tspan x="${centerX.toFixed(1)}" y="${lineY.toFixed(1)}">${escapeXml(line)}</tspan>`;
       })
       .join('');
 
+    const shapeMarkup = renderNodeShapeSvg(
+      shape,
+      x,
+      y,
+      w,
+      h,
+      bg,
+      border,
+      strokeW
+    );
+
     nodesSvg.push(
-      `    <g class="concept-node" id="node-${escapeXml(id)}">
-      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="12" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
+      `    <g class="concept-node" id="node-${escapeXml(id)}" data-shape="${escapeXml(shape)}">
+      ${shapeMarkup}
       <text text-anchor="middle" fill="${escapeXml(textColor)}" font-family="Inter, system-ui, Ubuntu, sans-serif" font-size="13" font-weight="${isRoot ? '700' : '600'}">${tspans}</text>
     </g>`
     );
@@ -420,6 +723,12 @@ export function generateStandaloneVectorSvg(
     <marker id="arrow-cross" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 1 L 10 5 L 0 9 z" fill="#d97706" />
     </marker>
+    <marker id="arrow-yes" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#059669" />
+    </marker>
+    <marker id="arrow-no" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#e11d48" />
+    </marker>
   </defs>
   <rect x="${viewBoxX}" y="${viewBoxY}" width="${viewBoxW}" height="${viewBoxH}" fill="#f8fafc" />
   <g id="edges-layer">
@@ -432,6 +741,18 @@ ${nodesSvg.join('\n')}
 ${edgeLabelsSvg.join('\n')}
   </g>
 </svg>`;
+}
+
+/**
+ * Função de conveniência para exportar diagrama diretamente como PNG Blob de alta resolução (2x DPI).
+ */
+export async function exportAsPng(
+  semantic: SemanticModel,
+  visual: VisualModel,
+  requestedScale = 2
+): Promise<Blob> {
+  const svg = generateStandaloneVectorSvg(semantic, visual);
+  return renderSvgStringToPngBlob(svg, requestedScale);
 }
 
 /**
@@ -545,6 +866,7 @@ export function parseAndValidateJsonDocument(
       customSize: Boolean(n?.customSize),
       computedLayer: n?.computedLayer ?? 0,
       style: n?.style,
+      nodeShape: n?.nodeShape,
     };
   }
 

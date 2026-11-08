@@ -7,7 +7,7 @@ import react from '@vitejs/plugin-react';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Plugin do servidor Vite que expõe a leitura de `exemplo.md` diretamente
+ * Plugin do servidor Vite que expõe a leitura de `exemplo.md` e `exemplo-fluxograma.md` diretamente
  * do diretório do projeto no Linux, quando solicitado pelo usuário.
  */
 function workspaceBridgePlugin(): Plugin {
@@ -17,24 +17,49 @@ function workspaceBridgePlugin(): Plugin {
       server.middlewares.use('/api/default-input', (req, res) => {
         if (req.method !== 'GET') {
           res.statusCode = 405;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(JSON.stringify({ error: 'Method Not Allowed' }));
           return;
         }
 
-        const exemploPath = path.resolve(__dirname, 'exemplo.md');
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const requestedFile = url.searchParams.get('file') || 'exemplo.md';
+
+        const ALLOWED_FILES: Record<string, string> = {
+          'exemplo.md': 'exemplo.md',
+          'exemplo-fluxograma.md': 'exemplo-fluxograma.md',
+        };
+
+        const targetFile = ALLOWED_FILES[path.basename(requestedFile)];
+        if (!targetFile) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.end(
+            JSON.stringify({
+              error: `Arquivo '${requestedFile}' não autorizado. Arquivos permitidos: ${Object.keys(ALLOWED_FILES).join(', ')}`,
+            })
+          );
+          return;
+        }
+
+        const filePath = path.resolve(__dirname, targetFile);
         try {
-          if (!fs.existsSync(exemploPath)) {
+          if (!fs.existsSync(filePath)) {
             res.statusCode = 404;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            res.end(JSON.stringify({ error: 'Arquivo exemplo.md não encontrado no diretório.' }));
+            res.end(
+              JSON.stringify({
+                error: `Arquivo ${targetFile} não encontrado no diretório do projeto.`,
+              })
+            );
             return;
           }
-          const content = fs.readFileSync(exemploPath, 'utf-8');
+          const content = fs.readFileSync(filePath, 'utf-8');
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(
             JSON.stringify({
-              fileName: 'exemplo.md',
+              fileName: targetFile,
               content,
             })
           );
@@ -43,7 +68,10 @@ function workspaceBridgePlugin(): Plugin {
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(
             JSON.stringify({
-              error: err instanceof Error ? err.message : 'Erro ao ler exemplo.md',
+              error:
+                err instanceof Error
+                  ? err.message
+                  : `Erro ao ler arquivo ${targetFile}`,
             })
           );
         }
