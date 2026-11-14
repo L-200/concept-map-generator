@@ -1,6 +1,8 @@
 import {
+  ArrowLeft,
   ArrowLeftRight,
   ArrowRight,
+  Minus,
   Pin,
   PinOff,
   Plus,
@@ -10,12 +12,15 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type {
+  ArrowDirection,
   ConceptId,
   EdgeCurveType,
   FlowchartNodeShape,
+  HandlePosition,
   NodeVisualStyle,
   RelationType,
 } from '../../domain/types';
+import { FLOWCHART_SHAPES_CONFIG } from '../canvas/shapeDefinitions';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
 const NODE_COLOR_PRESETS: Array<{
@@ -79,154 +84,79 @@ const NODE_COLOR_PRESETS: Array<{
   },
 ];
 
-interface FlowchartShapeMeta {
-  shape: FlowchartNodeShape;
+const CARDINAL_HANDLE_OPTIONS: Array<{
+  value: HandlePosition;
+  label: string;
+  shortLabel: string;
+}> = [
+  { value: 'auto', label: 'Automático (Auto)', shortLabel: 'Auto' },
+  { value: 'top', label: 'Topo (↑)', shortLabel: '↑ Topo' },
+  { value: 'right', label: 'Direita (→)', shortLabel: '→ Dir' },
+  { value: 'bottom', label: 'Base (↓)', shortLabel: '↓ Base' },
+  { value: 'left', label: 'Esquerda (←)', shortLabel: '← Esq' },
+];
+
+const ARROW_DIRECTION_OPTIONS: Array<{
+  value: ArrowDirection;
   label: string;
   sublabel: string;
-  renderIcon: (active: boolean) => React.ReactNode;
-}
-
-const FLOWCHART_SHAPES_CONFIG: FlowchartShapeMeta[] = [
+  icon: typeof ArrowRight;
+}> = [
   {
-    shape: 'terminal',
-    label: 'Início / Fim',
-    sublabel: 'Terminal (pílula)',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <rect
-          x="2"
-          y="2"
-          width="24"
-          height="14"
-          rx="7"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-        />
-      </svg>
-    ),
+    value: 'forward',
+    label: 'Origem → Destino',
+    sublabel: 'Destino (→)',
+    icon: ArrowRight,
   },
   {
-    shape: 'process',
-    label: 'Processo',
-    sublabel: 'Etapa / Ação',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <rect
-          x="2"
-          y="2"
-          width="24"
-          height="14"
-          rx="2"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-        />
-      </svg>
-    ),
+    value: 'reverse',
+    label: 'Origem ← Destino',
+    sublabel: 'Origem (←)',
+    icon: ArrowLeft,
   },
   {
-    shape: 'decision',
-    label: 'Decisão',
-    sublabel: 'Losango (Sim/Não)',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <polygon
-          points="14,2 26,9 14,16 2,9"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
+    value: 'both',
+    label: 'Bidirecional',
+    sublabel: 'Ambos (↔)',
+    icon: ArrowLeftRight,
   },
   {
-    shape: 'io',
-    label: 'Entrada / Saída',
-    sublabel: 'Dados (I/O)',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <polygon
-          points="7,2 26,2 21,16 2,16"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    shape: 'subroutine',
-    label: 'Sub-rotina',
-    sublabel: 'Subprocesso',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <rect
-          x="2"
-          y="2"
-          width="24"
-          height="14"
-          rx="2"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-        />
-        <line x1="7" y1="2" x2="7" y2="16" stroke="currentColor" strokeWidth="1.5" />
-        <line x1="21" y1="2" x2="21" y2="16" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    ),
-  },
-  {
-    shape: 'document',
-    label: 'Documento',
-    sublabel: 'Base ondulada',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <path
-          d="M 2,2 L 26,2 L 26,13 Q 20,16.5 14,13 Q 8,9.5 2,13 Z"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    shape: 'concept',
-    label: 'Conceito',
-    sublabel: 'Padrão Novak',
-    renderIcon: (active) => (
-      <svg viewBox="0 0 28 18" className="h-4 w-6 shrink-0">
-        <rect
-          x="2"
-          y="2"
-          width="24"
-          height="14"
-          rx="4"
-          fill={active ? 'currentColor' : 'none'}
-          fillOpacity={active ? 0.15 : 0}
-          stroke="currentColor"
-          strokeWidth="1.75"
-        />
-      </svg>
-    ),
+    value: 'none',
+    label: 'Sem Seta',
+    sublabel: 'Linha simples (—)',
+    icon: Minus,
   },
 ];
 
-export function PropertyInspector() {
-  const semantic = useConceptMapStore((s) => s.semantic);
-  const visual = useConceptMapStore((s) => s.visual);
-  const selectedNodeIds = useConceptMapStore((s) => s.selectedNodeIds);
-  const selectedEdgeIds = useConceptMapStore((s) => s.selectedEdgeIds);
+export interface PropertyInspectorProps {
+  selectedNodeIds?: ConceptId[];
+  selectedEdgeIds?: string[];
+}
+
+export function PropertyInspector(props?: PropertyInspectorProps) {
+  const storeSemantic = useConceptMapStore((s) => s.semantic);
+  const storeVisual = useConceptMapStore((s) => s.visual);
+  const storeSelectedNodeIds = useConceptMapStore((s) => s.selectedNodeIds);
+  const storeSelectedEdgeIds = useConceptMapStore((s) => s.selectedEdgeIds);
+
+  const selectedNodeIds =
+    props?.selectedNodeIds ??
+    (storeSelectedNodeIds.length > 0
+      ? storeSelectedNodeIds
+      : useConceptMapStore.getState().selectedNodeIds);
+  const selectedEdgeIds =
+    props?.selectedEdgeIds ??
+    (storeSelectedEdgeIds.length > 0
+      ? storeSelectedEdgeIds
+      : useConceptMapStore.getState().selectedEdgeIds);
+  const semantic =
+    storeSemantic.conceptOrder.length > 0
+      ? storeSemantic
+      : useConceptMapStore.getState().semantic;
+  const visual =
+    Object.keys(storeVisual.nodes).length > 0
+      ? storeVisual
+      : useConceptMapStore.getState().visual;
 
   const updateConceptLabel = useConceptMapStore((s) => s.updateConceptLabel);
   const updateConceptStyleAndNotes = useConceptMapStore(
@@ -253,6 +183,8 @@ export function PropertyInspector() {
   const [quickType, setQuickType] = useState<RelationType>(
     isFlowchart ? 'sequence' : 'hierarchical'
   );
+  const [quickSourceHandle, setQuickSourceHandle] = useState<HandlePosition>('auto');
+  const [quickTargetHandle, setQuickTargetHandle] = useState<HandlePosition>('auto');
 
   useEffect(() => {
     if (isFlowchart) {
@@ -345,6 +277,7 @@ export function PropertyInspector() {
                   <button
                     key={opt.shape}
                     type="button"
+                    data-testid={`node-shape-selector-${opt.shape}`}
                     onClick={() => updateNodeShape(conceptId, opt.shape)}
                     className={`flex items-center gap-2 rounded-lg border p-2 text-left transition ${
                       isSelected
@@ -491,6 +424,48 @@ export function PropertyInspector() {
                     </option>
                   ))}
               </select>
+              {/* Seletores de Porta (Origem e Destino) */}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-0.5 block text-[10px] font-semibold text-slate-600">
+                    Porta Saída (Origem)
+                  </label>
+                  <select
+                    value={quickSourceHandle}
+                    onChange={(e) =>
+                      setQuickSourceHandle(e.target.value as HandlePosition)
+                    }
+                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px]"
+                    data-testid="new-conn-source-handle"
+                  >
+                    {CARDINAL_HANDLE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-0.5 block text-[10px] font-semibold text-slate-600">
+                    Porta Chegada (Destino)
+                  </label>
+                  <select
+                    value={quickTargetHandle}
+                    onChange={(e) =>
+                      setQuickTargetHandle(e.target.value as HandlePosition)
+                    }
+                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-[11px]"
+                    data-testid="new-conn-target-handle"
+                  >
+                    {CARDINAL_HANDLE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div className="flex items-center gap-2">
                 <select
                   value={quickType}
@@ -512,6 +487,7 @@ export function PropertyInspector() {
                 </select>
                 <button
                   type="button"
+                  data-testid="quick-connect-btn"
                   disabled={!quickTargetId}
                   onClick={() => {
                     if (!quickTargetId) return;
@@ -520,9 +496,29 @@ export function PropertyInspector() {
                       : isFlowchart
                         ? ''
                         : 'relaciona-se com';
-                    addRelation(conceptId, quickTargetId, phraseToUse, quickType);
+                    const isManual =
+                      quickSourceHandle !== 'auto' || quickTargetHandle !== 'auto';
+                    addRelation(
+                      conceptId,
+                      quickTargetId,
+                      phraseToUse,
+                      quickType,
+                      {
+                        sourceHandle:
+                          quickSourceHandle === 'auto'
+                            ? undefined
+                            : quickSourceHandle,
+                        targetHandle:
+                          quickTargetHandle === 'auto'
+                            ? undefined
+                            : quickTargetHandle,
+                        manualHandles: isManual,
+                      }
+                    );
                     setQuickPhrase(isFlowchart ? '' : 'relaciona-se com');
                     setQuickTargetId('');
+                    setQuickSourceHandle('auto');
+                    setQuickTargetHandle('auto');
                   }}
                   className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40"
                 >
@@ -896,30 +892,162 @@ export function PropertyInspector() {
             )}
           </div>
 
-          {/* Alterar Conceito de Origem e Destino */}
-          <div className="space-y-2.5 rounded-lg border border-slate-200 p-3">
-            <div>
-              <label className="mb-1 block font-semibold text-slate-700">
-                {isFlowchart ? 'Bloco de Origem' : 'Conceito de Origem (A)'}
+          {/* Direção das Setas */}
+          <div data-testid="edge-arrow-direction-select">
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="font-semibold text-slate-700">
+                Direção da Conexão (Setas)
               </label>
-              <select
-                value={rel.sourceId}
-                onChange={(e) =>
-                  updateRelation(relationId, { sourceId: e.target.value })
-                }
-                className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800"
-              >
-                {semantic.conceptOrder.map((id) => (
-                  <option key={id} value={id}>
-                    {semantic.concepts[id]?.label}
-                  </option>
-                ))}
-              </select>
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-600">
+                {edgeVis.arrowDirection ?? 'forward'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {ARROW_DIRECTION_OPTIONS.map((opt) => {
+                const isSelected =
+                  (edgeVis.arrowDirection ?? 'forward') === opt.value;
+                const Icon = opt.icon;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    data-testid={`edge-arrow-direction-${opt.value}`}
+                    onClick={() =>
+                      updateRelation(relationId, { arrowDirection: opt.value })
+                    }
+                    className={`flex items-center gap-2 rounded-lg border p-2 text-left transition ${
+                      isSelected
+                        ? 'border-amber-600 bg-amber-50 text-amber-950 font-semibold shadow-sm ring-1 ring-amber-500'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                    title={opt.label}
+                  >
+                    <Icon
+                      className={`h-4 w-4 shrink-0 ${
+                        isSelected ? 'text-amber-600' : 'text-slate-400'
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] leading-tight font-medium">
+                        {opt.label}
+                      </div>
+                      <div className="truncate text-[9px] text-slate-400">
+                        {opt.sublabel}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Alterar Conceito de Origem, Destino e Pontos de Conexão */}
+          <div className="space-y-3 rounded-lg border border-slate-200 p-3">
+            {/* Origem */}
+            <div className="space-y-1.5">
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">
+                  {isFlowchart ? 'Bloco de Origem' : 'Conceito de Origem (A)'}
+                </label>
+                <select
+                  value={rel.sourceId}
+                  onChange={(e) =>
+                    updateRelation(relationId, { sourceId: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800"
+                >
+                  {semantic.conceptOrder.map((id) => (
+                    <option key={id} value={id}>
+                      {semantic.concepts[id]?.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Seletor de Porta de Saída (sourceHandle) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Ponto de Saída (Origem)
+                  </label>
+                  {edgeVis.manualHandles &&
+                    edgeVis.sourceHandle &&
+                    edgeVis.sourceHandle !== 'auto' && (
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-bold text-blue-700">
+                        Manual: {edgeVis.sourceHandle}
+                      </span>
+                    )}
+                </div>
+                <select
+                  data-testid="edge-source-handle-select"
+                  value={
+                    edgeVis.manualHandles && edgeVis.sourceHandle
+                      ? edgeVis.sourceHandle
+                      : 'auto'
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value as HandlePosition;
+                    const isAuto = val === 'auto';
+                    const targetIsManual =
+                      Boolean(edgeVis.manualHandles) &&
+                      Boolean(edgeVis.targetHandle) &&
+                      edgeVis.targetHandle !== 'auto';
+                    updateRelation(relationId, {
+                      sourceHandle: isAuto ? 'auto' : val,
+                      manualHandles: !isAuto || targetIsManual,
+                    });
+                  }}
+                  className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+                >
+                  {CARDINAL_HANDLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-5 gap-1 rounded-lg bg-slate-100 p-1">
+                  {CARDINAL_HANDLE_OPTIONS.map((opt) => {
+                    const currentSource =
+                      edgeVis.manualHandles && edgeVis.sourceHandle
+                        ? edgeVis.sourceHandle
+                        : 'auto';
+                    const isSelected = currentSource === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        data-testid={`edge-source-handle-${opt.value}`}
+                        onClick={() => {
+                          const isAuto = opt.value === 'auto';
+                          const targetIsManual =
+                            Boolean(edgeVis.manualHandles) &&
+                            Boolean(edgeVis.targetHandle) &&
+                            edgeVis.targetHandle !== 'auto';
+                          updateRelation(relationId, {
+                            sourceHandle: isAuto ? 'auto' : opt.value,
+                            manualHandles: !isAuto || targetIsManual,
+                          });
+                        }}
+                        className={`rounded py-1 text-center text-[10px] font-medium transition ${
+                          isSelected
+                            ? 'bg-blue-600 text-white font-semibold shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                        }`}
+                        title={`Origem: ${opt.label}`}
+                      >
+                        {opt.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
-            <div className="flex justify-center">
+            {/* Botão Inverter Direção */}
+            <div className="flex justify-center border-y border-slate-100 py-2">
               <button
                 type="button"
+                data-testid="edge-invert-direction-btn"
                 onClick={() => reverseRelationDirection(relationId)}
                 className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
               >
@@ -928,23 +1056,127 @@ export function PropertyInspector() {
               </button>
             </div>
 
-            <div>
-              <label className="mb-1 block font-semibold text-slate-700">
-                {isFlowchart ? 'Bloco de Destino' : 'Conceito de Destino (B)'}
-              </label>
-              <select
-                value={rel.targetId}
-                onChange={(e) =>
-                  updateRelation(relationId, { targetId: e.target.value })
+            {/* Destino */}
+            <div className="space-y-1.5">
+              <div>
+                <label className="mb-1 block font-semibold text-slate-700">
+                  {isFlowchart ? 'Bloco de Destino' : 'Conceito de Destino (B)'}
+                </label>
+                <select
+                  value={rel.targetId}
+                  onChange={(e) =>
+                    updateRelation(relationId, { targetId: e.target.value })
+                  }
+                  className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800"
+                >
+                  {semantic.conceptOrder.map((id) => (
+                    <option key={id} value={id}>
+                      {semantic.concepts[id]?.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Seletor de Porta de Chegada (targetHandle) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-slate-600">
+                    Ponto de Chegada (Destino)
+                  </label>
+                  {edgeVis.manualHandles &&
+                    edgeVis.targetHandle &&
+                    edgeVis.targetHandle !== 'auto' && (
+                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-bold text-blue-700">
+                        Manual: {edgeVis.targetHandle}
+                      </span>
+                    )}
+                </div>
+                <select
+                  data-testid="edge-target-handle-select"
+                  value={
+                    edgeVis.manualHandles && edgeVis.targetHandle
+                      ? edgeVis.targetHandle
+                      : 'auto'
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value as HandlePosition;
+                    const isAuto = val === 'auto';
+                    const sourceIsManual =
+                      Boolean(edgeVis.manualHandles) &&
+                      Boolean(edgeVis.sourceHandle) &&
+                      edgeVis.sourceHandle !== 'auto';
+                    updateRelation(relationId, {
+                      targetHandle: isAuto ? 'auto' : val,
+                      manualHandles: !isAuto || sourceIsManual,
+                    });
+                  }}
+                  className="w-full rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+                >
+                  {CARDINAL_HANDLE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-5 gap-1 rounded-lg bg-slate-100 p-1">
+                  {CARDINAL_HANDLE_OPTIONS.map((opt) => {
+                    const currentTarget =
+                      edgeVis.manualHandles && edgeVis.targetHandle
+                        ? edgeVis.targetHandle
+                        : 'auto';
+                    const isSelected = currentTarget === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        data-testid={`edge-target-handle-${opt.value}`}
+                        onClick={() => {
+                          const isAuto = opt.value === 'auto';
+                          const sourceIsManual =
+                            Boolean(edgeVis.manualHandles) &&
+                            Boolean(edgeVis.sourceHandle) &&
+                            edgeVis.sourceHandle !== 'auto';
+                          updateRelation(relationId, {
+                            targetHandle: isAuto ? 'auto' : opt.value,
+                            manualHandles: !isAuto || sourceIsManual,
+                          });
+                        }}
+                        className={`rounded py-1 text-center text-[10px] font-medium transition ${
+                          isSelected
+                            ? 'bg-blue-600 text-white font-semibold shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                        }`}
+                        title={`Destino: ${opt.label}`}
+                      >
+                        {opt.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Opção de restaurar portas automáticas */}
+            <div className="flex items-center justify-between border-t border-slate-100 pt-2 text-[11px]">
+              <span className="text-[10px] text-slate-400">
+                {edgeVis.manualHandles
+                  ? 'Pontos manuais fixados'
+                  : 'Portas automáticas ativas'}
+              </span>
+              <button
+                type="button"
+                data-testid="edge-reset-auto-handles-btn"
+                onClick={() =>
+                  updateRelation(relationId, {
+                    sourceHandle: 'auto',
+                    targetHandle: 'auto',
+                    manualHandles: false,
+                  })
                 }
-                className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-800"
+                className="inline-flex items-center gap-1 font-medium text-blue-600 hover:underline"
               >
-                {semantic.conceptOrder.map((id) => (
-                  <option key={id} value={id}>
-                    {semantic.concepts[id]?.label}
-                  </option>
-                ))}
-              </select>
+                <RotateCcw className="h-3 w-3" /> Restaurar portas automáticas
+              </button>
             </div>
           </div>
 

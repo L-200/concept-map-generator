@@ -28,6 +28,8 @@ function workspaceBridgePlugin(): Plugin {
         const ALLOWED_FILES: Record<string, string> = {
           'exemplo.md': 'exemplo.md',
           'exemplo-fluxograma.md': 'exemplo-fluxograma.md',
+          'exemplo-canvas-livre.cmap.json': 'exemplo-canvas-livre.cmap.json',
+          'exemplo-canvas-livre.md': 'exemplo-canvas-livre.md',
         };
 
         const targetFile = ALLOWED_FILES[path.basename(requestedFile)];

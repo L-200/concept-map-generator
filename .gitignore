@@ -3,22 +3,47 @@
 /.pnp
 .pnp.js
 
-# Build & TypeScript outputs
+# Build, Vite cache & TypeScript outputs
 /dist
 /dist-ssr
+/.vite
 *.tsbuildinfo
 
 # Testing & Coverage
 /coverage
+/.vitest*
+/test-results
+/playwright-report
 
-# AI Agent & Development Prompts / Scratch
+# AI Agent & Development Prompts / Scratch / Multi-Agent Artifacts
 /.agents
+.agents/
+/.gemini
+.gemini/
+/.antigravity
+.antigravity/
+/.claude
+/.cursor
 /debug
+/scratch
 ORIGINAL_REQUEST.md
 PROJECT.md
 TEST_INFRA.md
 TEST_READY.md
+DISPATCH.md
+BRIEFING.md
+GATE_STATUS.md
+handoff.md
+progress.md
+survey_report.md
 prompt*.md
+proposicoes.md
+*.patch
+*.orig
+*.bak
+*.tmp
+*.temp
+*~
 
 # Environment variables
 .env

@@ -549,5 +549,110 @@ describe('Flowchart Auto-Layout (exemplo-fluxograma.md) (Milestone 2)', () => {
     expect(hierarchicalSmoothstepCount).toBe(31);
     expect(crossLinkBezierCount).toBe(15);
   });
+
+  describe('LayoutEngine — Manual Handles & Freeform Canvas (Milestone 1 / R1)', () => {
+    it('preserva sourceHandle, targetHandle, manualHandles e arrowDirection ao recomputar layout', async () => {
+      const rawNovak = fs.readFileSync(exemploPath, 'utf-8');
+      const parsed = parseConceptMapMarkdown(rawNovak);
+
+      const relId = parsed.semantic.relationOrder[0];
+      const existingVisual: VisualModel = {
+        nodes: {},
+        edges: {
+          [relId]: {
+            relationId: relId,
+            curveType: 'bezier',
+            sourceHandle: 'left',
+            targetHandle: 'right',
+            manualHandles: true,
+            arrowDirection: 'both',
+          },
+        },
+        viewport: { x: 0, y: 0, zoom: 1 },
+        layoutSettings: { ...DEFAULT_LAYOUT_SETTINGS },
+        crossLinkVisibility: 'all',
+      };
+
+      const result = await computeConceptMapLayout(
+        parsed.semantic,
+        existingVisual,
+        { algorithm: 'dagre-hierarchical' }
+      );
+
+      const edge = result.edges[relId];
+      expect(edge).toBeDefined();
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('right');
+      expect(edge.manualHandles).toBe(true);
+      expect(edge.arrowDirection).toBe('both');
+    });
+
+    it('preserva portas existentes quando settings.freeformCanvas é verdadeiro', async () => {
+      const rawNovak = fs.readFileSync(exemploPath, 'utf-8');
+      const parsed = parseConceptMapMarkdown(rawNovak);
+
+      const relId = parsed.semantic.relationOrder[0];
+      const existingVisual: VisualModel = {
+        nodes: {},
+        edges: {
+          [relId]: {
+            relationId: relId,
+            curveType: 'smoothstep',
+            sourceHandle: 'top',
+            targetHandle: 'bottom',
+          },
+        },
+        viewport: { x: 0, y: 0, zoom: 1 },
+        layoutSettings: {
+          ...DEFAULT_LAYOUT_SETTINGS,
+          freeformCanvas: true,
+        },
+        crossLinkVisibility: 'all',
+      };
+
+      const result = await computeConceptMapLayout(
+        parsed.semantic,
+        existingVisual,
+        { freeformCanvas: true }
+      );
+
+      const edge = result.edges[relId];
+      expect(edge.sourceHandle).toBe('top');
+      expect(edge.targetHandle).toBe('bottom');
+    });
+
+    it('recalcula smart handles normalmente para arestas não-manuais quando freeformCanvas é falso', async () => {
+      const rawNovak = fs.readFileSync(exemploPath, 'utf-8');
+      const parsed = parseConceptMapMarkdown(rawNovak);
+
+      const relId = parsed.semantic.relationOrder[0];
+      const existingVisual: VisualModel = {
+        nodes: {},
+        edges: {
+          [relId]: {
+            relationId: relId,
+            curveType: 'smoothstep',
+            sourceHandle: 'left',
+            targetHandle: 'right',
+            manualHandles: false, // Explicitamente false
+          },
+        },
+        viewport: { x: 0, y: 0, zoom: 1 },
+        layoutSettings: { ...DEFAULT_LAYOUT_SETTINGS, freeformCanvas: false },
+        crossLinkVisibility: 'all',
+      };
+
+      const result = await computeConceptMapLayout(
+        parsed.semantic,
+        existingVisual,
+        { algorithm: 'novak-backbone', direction: 'TB' }
+      );
+
+      const edge = result.edges[relId];
+      // Para Novak TB hierárquica, a porta inteligente é bottom -> top
+      expect(edge.sourceHandle).toBe('bottom');
+      expect(edge.targetHandle).toBe('top');
+    });
+  });
 });
 

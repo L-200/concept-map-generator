@@ -473,6 +473,299 @@ describe('useConceptMapStore & Undo/Redo (Etapa 4)', () => {
       expect(state.visual.layoutSettings.algorithm).toBe('dagre-hierarchical');
     });
   });
+
+  describe('Freeform Canvas & Manual Handle Persistence (Milestone 1 / R1)', () => {
+    it('preserva sourceHandle e targetHandle manuais durante moveNodes, enquanto arestas automáticas recalculam', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'concept-map');
+
+      const idA = store.addConcept('Bloco A', { x: 100, y: 100 });
+      const idB = store.addConcept('Bloco B', { x: 100, y: 300 });
+
+      // Aresta 1: manual
+      const manualRelId = store.addRelation(
+        idA,
+        idB,
+        'conecta manual',
+        'cross-link',
+        { sourceHandle: 'left', targetHandle: 'right', manualHandles: true }
+      );
+
+      // Aresta 2: automática (sem handles explícitos, ligação cruzada adapta dinamicamente com separação horizontal)
+      const idC = store.addConcept('Bloco C', { x: 100, y: 300 });
+      const autoRelId = store.addRelation(idA, idC, 'conecta auto', 'cross-link');
+
+      expect(manualRelId).toBeTruthy();
+      expect(autoRelId).toBeTruthy();
+
+      const edgeManualInitial = useConceptMapStore.getState().visual.edges[manualRelId!];
+      expect(edgeManualInitial.sourceHandle).toBe('left');
+      expect(edgeManualInitial.targetHandle).toBe('right');
+      expect(edgeManualInitial.manualHandles).toBe(true);
+
+      // Move Bloco B e Bloco C para a direita de A (x=400, y=100)
+      store.moveNodes([
+        { conceptId: idB, position: { x: 400, y: 100 } },
+        { conceptId: idC, position: { x: 400, y: 100 } },
+      ]);
+
+      const stateAfterMove = useConceptMapStore.getState();
+      const edgeManualAfter = stateAfterMove.visual.edges[manualRelId!];
+      const edgeAutoAfter = stateAfterMove.visual.edges[autoRelId!];
+
+      // Aresta manual NUNCA deve ser alterada
+      expect(edgeManualAfter.sourceHandle).toBe('left');
+      expect(edgeManualAfter.targetHandle).toBe('right');
+      expect(edgeManualAfter.manualHandles).toBe(true);
+
+      // Aresta automática deve ter se adaptado para conexão horizontal (right -> left)
+      expect(edgeAutoAfter.sourceHandle).toBe('right');
+      expect(edgeAutoAfter.targetHandle).toBe('left');
+    });
+
+    it('preserva portas manuais em updateRelation ao editar texto/tipo e permite redefinir para auto', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'flowchart');
+
+      const idA = store.addConcept('Passo 1', { x: 100, y: 100 });
+      const idB = store.addConcept('Passo 2', { x: 100, y: 300 });
+
+      const relId = store.addRelation(idA, idB, 'avança', 'sequence', {
+        sourceHandle: 'top',
+        targetHandle: 'bottom',
+        manualHandles: true,
+      });
+
+      // 1. Atualiza apenas a frase de ligação
+      store.updateRelation(relId!, { linkingPhrase: 'avança com validação' });
+      let edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('top');
+      expect(edge.targetHandle).toBe('bottom');
+      expect(edge.manualHandles).toBe(true);
+
+      // 2. Atualiza apenas o tipo de aresta
+      store.updateRelation(relId!, { type: 'conditional' });
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('top');
+      expect(edge.targetHandle).toBe('bottom');
+      expect(edge.manualHandles).toBe(true);
+
+      // 3. Atualiza explicitamente uma das portas
+      store.updateRelation(relId!, { sourceHandle: 'right' });
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('right');
+      expect(edge.targetHandle).toBe('bottom');
+      expect(edge.manualHandles).toBe(true);
+
+      // 4. Reseta para automático passando 'auto'
+      store.updateRelation(relId!, { sourceHandle: 'auto', targetHandle: 'auto' });
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.manualHandles).toBe(false);
+      // Como Passo 1 está no topo de Passo 2, em TB fluxo top-to-bottom o smart é bottom -> top
+      expect(edge.sourceHandle).toBe('bottom');
+      expect(edge.targetHandle).toBe('top');
+    });
+
+    it('preserva portas manuais de arestas incidentes ao alterar formato geométrico do bloco (updateNodeShape)', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'flowchart');
+
+      const idA = store.addConcept('Operação', { x: 200, y: 100 });
+      const idB = store.addConcept('Resultado', { x: 200, y: 350 });
+
+      store.updateNodeShape(idA, 'process');
+      const relId = store.addRelation(idA, idB, 'produz', 'sequence', {
+        sourceHandle: 'left',
+        targetHandle: 'left',
+        manualHandles: true,
+      });
+
+      // Altera idA de process para decision (losango)
+      store.updateNodeShape(idA, 'decision');
+      expect(useConceptMapStore.getState().visual.nodes[idA].nodeShape).toBe('decision');
+
+      let edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('left');
+      expect(edge.manualHandles).toBe(true);
+
+      // Altera idB para document
+      store.updateNodeShape(idB, 'document');
+      expect(useConceptMapStore.getState().visual.nodes[idB].nodeShape).toBe('document');
+
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('left');
+      expect(edge.manualHandles).toBe(true);
+    });
+
+    it('permite criar múltiplas conexões paralelas entre os mesmos dois blocos com portas e direções distintas', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'flowchart');
+
+      const idA = store.addConcept('Serviço Principal', { x: 100, y: 150 });
+      const idB = store.addConcept('Serviço Auxiliar', { x: 450, y: 150 });
+
+      // Conexão 1: Direta pela lateral direita para esquerda
+      const rel1 = store.addRelation(idA, idB, 'requisição', 'sequence', {
+        sourceHandle: 'right',
+        targetHandle: 'left',
+        manualHandles: true,
+      });
+
+      // Conexão 2: Fluxo secundário saindo pela base e entrando pelo topo
+      const rel2 = store.addRelation(idA, idB, 'canal de contingência', 'sequence', {
+        sourceHandle: 'bottom',
+        targetHandle: 'top',
+        manualHandles: true,
+      });
+
+      // Conexão 3: Retorno do serviço auxiliar saindo pelo topo para o topo de A
+      const rel3 = store.addRelation(idB, idA, 'confirmação assíncrona', 'loop-back', {
+        sourceHandle: 'top',
+        targetHandle: 'top',
+        manualHandles: true,
+      });
+
+      expect(rel1).toBeTruthy();
+      expect(rel2).toBeTruthy();
+      expect(rel3).toBeTruthy();
+      expect(new Set([rel1, rel2, rel3]).size).toBe(3);
+
+      const edges = useConceptMapStore.getState().visual.edges;
+      expect(edges[rel1!].sourceHandle).toBe('right');
+      expect(edges[rel1!].targetHandle).toBe('left');
+
+      expect(edges[rel2!].sourceHandle).toBe('bottom');
+      expect(edges[rel2!].targetHandle).toBe('top');
+
+      expect(edges[rel3!].sourceHandle).toBe('top');
+      expect(edges[rel3!].targetHandle).toBe('top');
+
+      // Move os blocos e valida que ambas as arestas paralelas persistem independentes
+      store.moveNodes([
+        { conceptId: idA, position: { x: 120, y: 220 } },
+        { conceptId: idB, position: { x: 500, y: 220 } },
+      ]);
+
+      const afterMoveEdges = useConceptMapStore.getState().visual.edges;
+      expect(afterMoveEdges[rel1!].sourceHandle).toBe('right');
+      expect(afterMoveEdges[rel1!].targetHandle).toBe('left');
+      expect(afterMoveEdges[rel2!].sourceHandle).toBe('bottom');
+      expect(afterMoveEdges[rel2!].targetHandle).toBe('top');
+      expect(afterMoveEdges[rel3!].sourceHandle).toBe('top');
+      expect(afterMoveEdges[rel3!].targetHandle).toBe('top');
+    });
+
+    it('inverte sourceHandle <-> targetHandle em reverseRelationDirection quando manual e suporta arrowDirection', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'concept-map');
+
+      const idA = store.addConcept('Origem', { x: 100, y: 100 });
+      const idB = store.addConcept('Destino', { x: 300, y: 250 });
+
+      const relId = store.addRelation(
+        idA,
+        idB,
+        'influencia',
+        'cross-link',
+        { sourceHandle: 'right', targetHandle: 'top', manualHandles: true },
+        'forward'
+      );
+
+      let edge = useConceptMapStore.getState().visual.edges[relId!];
+      let sem = useConceptMapStore.getState().semantic.relations[relId!];
+      expect(sem.sourceId).toBe(idA);
+      expect(sem.targetId).toBe(idB);
+      expect(edge.sourceHandle).toBe('right');
+      expect(edge.targetHandle).toBe('top');
+      expect(edge.arrowDirection).toBe('forward');
+
+      // Inverte direção da relação
+      store.reverseRelationDirection(relId!);
+
+      sem = useConceptMapStore.getState().semantic.relations[relId!];
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(sem.sourceId).toBe(idB);
+      expect(sem.targetId).toBe(idA);
+      // As portas devem ter sido invertidas!
+      expect(edge.sourceHandle).toBe('top');
+      expect(edge.targetHandle).toBe('right');
+      expect(edge.manualHandles).toBe(true);
+
+      // Testa troca de arrowDirection para todas as variantes válidas
+      const directions: Array<'forward' | 'reverse' | 'both' | 'none'> = [
+        'reverse',
+        'both',
+        'none',
+        'forward',
+      ];
+      for (const dir of directions) {
+        store.updateRelation(relId!, { arrowDirection: dir });
+        expect(useConceptMapStore.getState().visual.edges[relId!].arrowDirection).toBe(dir);
+      }
+    });
+
+    it('suporta modo Canvas Livre (freeformCanvas) mantendo ancoragens manuais protegidas contra re-layout', async () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'concept-map', { freeformCanvas: true });
+
+      expect(useConceptMapStore.getState().visual.layoutSettings.freeformCanvas).toBe(true);
+
+      const idA = store.addConcept('Módulo X', { x: 100, y: 100 });
+      const idB = store.addConcept('Módulo Y', { x: 300, y: 300 });
+
+      const relId = store.addRelation(idA, idB, 'integra', 'cross-link', {
+        sourceHandle: 'left',
+        targetHandle: 'bottom',
+      });
+
+      // Em modo Canvas Livre, toda aresta criada é tratada com proteção de handles
+      let edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('bottom');
+
+      // Executa auto-layout DAGRE ou Novak: em Canvas Livre, as portas manuais não devem ser destruídas
+      await store.applyAutoLayout({ algorithm: 'dagre-hierarchical' });
+
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('bottom');
+
+      // Testa Undo / Redo
+      useConceptMapStore.temporal.getState().undo();
+      edge = useConceptMapStore.getState().visual.edges[relId!];
+      expect(edge.sourceHandle).toBe('left');
+      expect(edge.targetHandle).toBe('bottom');
+    });
+
+    it('bloqueia manualHandles=true ao reconectar aresta via reconnectRelation', () => {
+      const store = useConceptMapStore.getState();
+      store.createNewEmptyMap(false, 'flowchart');
+
+      const idA = store.addConcept('A', { x: 100, y: 100 });
+      const idB = store.addConcept('B', { x: 100, y: 250 });
+      const idC = store.addConcept('C', { x: 300, y: 250 });
+
+      const relId = store.addRelation(idA, idB, 'fluxo');
+      expect(relId).toBeTruthy();
+
+      // Reconecta para C com portas explícitas
+      store.reconnectRelation(relId!, idA, idC, {
+        sourceHandle: 'right',
+        targetHandle: 'top',
+      });
+
+      const state = useConceptMapStore.getState();
+      const rel = state.semantic.relations[relId!];
+      const edge = state.visual.edges[relId!];
+
+      expect(rel.targetId).toBe(idC);
+      expect(edge.sourceHandle).toBe('right');
+      expect(edge.targetHandle).toBe('top');
+      expect(edge.manualHandles).toBe(true);
+    });
+  });
 });
 
 

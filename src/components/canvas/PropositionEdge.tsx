@@ -4,15 +4,18 @@ import {
   getBezierPath,
   getSmoothStepPath,
   getStraightPath,
+  Position,
   type Edge,
   type EdgeProps,
 } from '@xyflow/react';
 import { ArrowLeftRight, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type {
+  ArrowDirection,
   DiagramMode,
   EdgeCurveType,
   FlowTransitionKind,
+  HandlePosition,
   RelationId,
   RelationType,
 } from '../../domain/types';
@@ -31,6 +34,10 @@ export interface PropositionEdgeData extends Record<string, unknown> {
   isSearchMatch: boolean;
   flowKind?: FlowTransitionKind;
   diagramMode?: DiagramMode;
+  sourceHandle?: HandlePosition;
+  targetHandle?: HandlePosition;
+  manualHandles?: boolean;
+  arrowDirection?: ArrowDirection;
 }
 
 export type PropositionFlowEdge = Edge<PropositionEdgeData, 'proposition'>;
@@ -66,6 +73,27 @@ export function getFlowchartConditionType(phrase: string): FlowchartConditionTyp
   return 'neutral';
 }
 
+/**
+ * Mapeia handleId cardinal ('top' | 'right' | 'bottom' | 'left') para Position enum do React Flow.
+ */
+export function handleToPosition(
+  handleId?: string | null,
+  fallback: Position = Position.Top
+): Position {
+  switch (handleId) {
+    case 'top':
+      return Position.Top;
+    case 'right':
+      return Position.Right;
+    case 'bottom':
+      return Position.Bottom;
+    case 'left':
+      return Position.Left;
+    default:
+      return fallback;
+  }
+}
+
 export function PropositionEdge({
   id,
   sourceX,
@@ -74,7 +102,10 @@ export function PropositionEdge({
   targetY,
   sourcePosition,
   targetPosition,
+  sourceHandleId,
+  targetHandleId,
   selected,
+  markerStart,
   markerEnd,
   data,
 }: EdgeProps<PropositionFlowEdge>) {
@@ -151,6 +182,16 @@ export function PropositionEdge({
     }
   };
 
+  // Posições cardinais efetivas de saída e entrada
+  const effectiveSourcePosition = handleToPosition(
+    sourceHandleId ?? data.sourceHandle,
+    sourcePosition ?? Position.Bottom
+  );
+  const effectiveTargetPosition = handleToPosition(
+    targetHandleId ?? data.targetHandle,
+    targetPosition ?? Position.Top
+  );
+
   // Cálculo do caminho SVG e posição do rótulo
   let edgePath = '';
   let baseLabelX = (sourceX + targetX) / 2;
@@ -180,10 +221,10 @@ export function PropositionEdge({
     const [path, lx, ly] = getSmoothStepPath({
       sourceX,
       sourceY,
-      sourcePosition,
+      sourcePosition: effectiveSourcePosition,
       targetX,
       targetY,
-      targetPosition,
+      targetPosition: effectiveTargetPosition,
       borderRadius: 12,
     });
     edgePath = path;
@@ -194,10 +235,10 @@ export function PropositionEdge({
     const [path, lx, ly] = getBezierPath({
       sourceX,
       sourceY,
-      sourcePosition,
+      sourcePosition: effectiveSourcePosition,
       targetX,
       targetY,
-      targetPosition,
+      targetPosition: effectiveTargetPosition,
       curvature,
     });
     edgePath = path;
@@ -277,6 +318,7 @@ export function PropositionEdge({
         <BaseEdge
           id={id}
           path={edgePath}
+          markerStart={markerStart}
           markerEnd={markerEnd}
           interactionWidth={24}
           style={{

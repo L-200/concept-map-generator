@@ -11,6 +11,7 @@ import {
 } from 'd3-force';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type {
+  ArrowDirection,
   ConceptId,
   ConceptNodeVisual,
   ConceptRelationVisual,
@@ -36,6 +37,7 @@ export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   nodeSpacingY: 110,
   layerSpacing: 115,
   respectPinnedNodes: true,
+  freeformCanvas: false,
 };
 
 export interface LayoutComputationResult {
@@ -918,6 +920,8 @@ export async function computeConceptMapLayout(
   );
   const labelOffsets = computeEdgeLabelOffsets(semantic);
 
+  const isFreeform = Boolean(settings.freeformCanvas);
+
   const nextEdges: Record<RelationId, ConceptRelationVisual> = {};
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
@@ -927,6 +931,24 @@ export async function computeConceptMapLayout(
       sourceHandle: 'bottom',
       targetHandle: 'top',
     };
+
+    const isManual = Boolean(prevEdge?.manualHandles || rel.manualHandles || isFreeform);
+
+    const sourceHandle: HandlePosition =
+      isManual && prevEdge?.sourceHandle && prevEdge.sourceHandle !== 'auto'
+        ? prevEdge.sourceHandle
+        : handles.sourceHandle;
+
+    const targetHandle: HandlePosition =
+      isManual && prevEdge?.targetHandle && prevEdge.targetHandle !== 'auto'
+        ? prevEdge.targetHandle
+        : handles.targetHandle;
+
+    const manualHandles =
+      prevEdge?.manualHandles ?? rel.manualHandles ?? (isFreeform ? true : undefined);
+
+    const arrowDirection: ArrowDirection =
+      prevEdge?.arrowDirection ?? rel.arrowDirection ?? 'forward';
 
     const hasCustomOffset =
       prevEdge?.labelOffset?.t !== undefined && prevEdge.labelOffset.t !== 0.5;
@@ -941,13 +963,16 @@ export async function computeConceptMapLayout(
     nextEdges[relId] = {
       relationId: relId,
       curveType: prevEdge?.curveType ?? defaultCurve,
-      sourceHandle: handles.sourceHandle,
-      targetHandle: handles.targetHandle,
+      sourceHandle,
+      targetHandle,
+      manualHandles,
+      arrowDirection,
       labelOffset: hasCustomOffset
         ? prevEdge!.labelOffset
         : labelOffsets[relId] ?? { t: 0.5 },
       style: prevEdge?.style,
       flowKind: rel.flowKind ?? prevEdge?.flowKind,
+      waypoints: prevEdge?.waypoints,
     };
   }
 

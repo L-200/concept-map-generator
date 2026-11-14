@@ -10,3 +10,31 @@ body,
   margin: 0;
   padding: 0;
 }
+
+/* ==========================================================================
+   Realce de Portas de Conexão no Canvas Livre (ConnectionMode.Loose)
+   ========================================================================== */
+
+/* Quando uma conexão está em andamento (arraste de ponta ou nova conexão),
+   destaca todas as portas de conexão para facilitar a mira do usuário */
+.react-flow--connecting .react-flow__handle,
+.react-flow__handle.connectionindicator {
+  opacity: 0.85 !important;
+  pointer-events: all;
+  transition: opacity 150ms ease, box-shadow 150ms ease;
+}
+
+/* Porta sob o cursor que é alvo de conexão válida */
+.react-flow--connecting .react-flow__handle:hover,
+.react-flow__handle.connectingto,
+.react-flow__handle.valid {
+  opacity: 1 !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.45);
+}
+
+/* Porta sob o cursor que é alvo de conexão inválida (ex: mesma porta no mesmo bloco) */
+.react-flow--connecting .react-flow__handle.react-flow__handle-invalid {
+  opacity: 0.3 !important;
+  cursor: not-allowed;
+  box-shadow: 0 0 0 4px rgba(225, 29, 72, 0.45);
+}

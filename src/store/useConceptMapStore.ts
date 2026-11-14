@@ -1,6 +1,7 @@
 import { temporal } from 'zundo';
 import { create } from 'zustand';
 import type {
+  ArrowDirection,
   ConceptId,
   ConceptMapDocument,
   ConceptNodeVisual,
@@ -73,9 +74,14 @@ export interface ConceptMapState {
 
   // Ações de alternância de modo
   setDiagramMode: (mode: DiagramMode) => void;
+  setFreeformCanvas: (enabled: boolean) => void;
 
   // Ações de carregamento e persistência
-  createNewEmptyMap: (withStarterConcept?: boolean, mode?: DiagramMode) => void;
+  createNewEmptyMap: (
+    withStarterConcept?: boolean,
+    mode?: DiagramMode,
+    options?: { freeformCanvas?: boolean }
+  ) => void;
   loadFromMarkdown: (markdownContent: string, fileName?: string) => Promise<void>;
   loadFromDocument: (doc: ConceptMapDocument) => void;
   exportDocument: () => ConceptMapDocument;
@@ -129,7 +135,12 @@ export interface ConceptMapState {
     targetId: ConceptId,
     linkingPhrase?: string,
     type?: RelationType,
-    handles?: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition }
+    handles?: {
+      sourceHandle?: HandlePosition;
+      targetHandle?: HandlePosition;
+      manualHandles?: boolean;
+    },
+    arrowDirection?: ArrowDirection
   ) => RelationId | null;
   updateRelation: (
     relationId: RelationId,
@@ -141,6 +152,8 @@ export interface ConceptMapState {
       curveType?: EdgeCurveType;
       sourceHandle?: HandlePosition;
       targetHandle?: HandlePosition;
+      manualHandles?: boolean;
+      arrowDirection?: ArrowDirection;
       labelOffset?: { x?: number; y?: number; t?: number };
     }
   ) => void;
@@ -149,7 +162,11 @@ export interface ConceptMapState {
     relationId: RelationId,
     newSourceId: ConceptId,
     newTargetId: ConceptId,
-    handles?: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition }
+    handles?: {
+      sourceHandle?: HandlePosition;
+      targetHandle?: HandlePosition;
+      manualHandles?: boolean;
+    }
   ) => void;
 
   // Exclusão atômica (com cascata de arestas incidentes)
@@ -285,6 +302,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.layoutSettings.direction
         );
 
+        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
         const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {};
         for (const [rId, edge] of Object.entries(state.visual.edges)) {
           const rel = nextSemantic.relations[rId];
@@ -292,12 +310,20 @@ export const useConceptMapStore = create<ConceptMapState>()(
             ? 'smoothstep'
             : (rel?.type === 'hierarchical' ? 'smoothstep' : 'bezier');
 
+          const preserveHandles =
+            Boolean(edge.manualHandles) ||
+            Boolean(rel?.manualHandles) ||
+            isFreeform;
           const smart = smartHandles[rId];
           updatedEdges[rId] = {
             ...edge,
             curveType: defaultCurve,
-            sourceHandle: smart?.sourceHandle ?? edge.sourceHandle,
-            targetHandle: smart?.targetHandle ?? edge.targetHandle,
+            sourceHandle: preserveHandles
+              ? edge.sourceHandle
+              : (smart?.sourceHandle ?? edge.sourceHandle),
+            targetHandle: preserveHandles
+              ? edge.targetHandle
+              : (smart?.targetHandle ?? edge.targetHandle),
           };
         }
 
@@ -330,7 +356,26 @@ export const useConceptMapStore = create<ConceptMapState>()(
         });
       },
 
-      createNewEmptyMap: (withStarterConcept = false, mode: DiagramMode = 'concept-map') => {
+      setFreeformCanvas: (enabled: boolean) => {
+        const state = get();
+        const nextVisual: VisualModel = {
+          ...state.visual,
+          layoutSettings: {
+            ...state.visual.layoutSettings,
+            freeformCanvas: enabled,
+          },
+        };
+        set({
+          visual: nextVisual,
+          hasUnsavedChanges: true,
+        });
+      },
+
+      createNewEmptyMap: (
+        withStarterConcept = false,
+        mode: DiagramMode = 'concept-map',
+        options?: { freeformCanvas?: boolean }
+      ) => {
         const isFlowchart = mode === 'flowchart';
         const defaultTitle = isFlowchart ? 'Novo Fluxograma' : 'Novo Mapa Conceitual';
         const defaultFileName = isFlowchart ? 'novo-fluxograma.md' : 'novo-mapa.md';
@@ -346,6 +391,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
           layoutSettings: {
             ...get().visual.layoutSettings,
             algorithm: isFlowchart ? 'dagre-hierarchical' : get().visual.layoutSettings.algorithm,
+            freeformCanvas: options?.freeformCanvas ?? false,
           },
         };
 
@@ -571,12 +617,17 @@ export const useConceptMapStore = create<ConceptMapState>()(
       loadFromMarkdown: async (markdownContent: string, fileName = 'exemplo.md') => {
         set({ isLayoutRunning: true });
         const parsed = parseConceptMapMarkdown(markdownContent);
+        const hasFreeformDirective =
+          /^---[\s\S]*?\n\s*(?:freeform|freeformCanvas|canvas-livre)\s*:\s*true\b[\s\S]*?\n---/im.test(
+            markdownContent
+          ) || /canvas-livre|freeform/i.test(fileName);
         const layoutSettings: LayoutSettings = {
           ...DEFAULT_LAYOUT_SETTINGS,
           algorithm:
             parsed.semantic.diagramMode === 'flowchart'
               ? 'dagre-hierarchical'
               : DEFAULT_LAYOUT_SETTINGS.algorithm,
+          freeformCanvas: hasFreeformDirective,
         };
         const layoutResult = await computeConceptMapLayout(
           parsed.semantic,
@@ -1354,6 +1405,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.layoutSettings.direction
         );
 
+        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
         const updatedEdges = { ...state.visual.edges };
         for (const relId of state.semantic.relationOrder) {
           const rel = state.semantic.relations[relId];
@@ -1361,6 +1413,10 @@ export const useConceptMapStore = create<ConceptMapState>()(
             const prevEdge = updatedEdges[relId];
             const smart = smartHandles[relId];
             if (prevEdge && smart) {
+              // PRESERVATION GUARANTEE: Never overwrite manual handles or freeform canvas edges
+              if (prevEdge.manualHandles || isFreeform) {
+                continue;
+              }
               updatedEdges[relId] = {
                 ...prevEdge,
                 sourceHandle: smart.sourceHandle,
@@ -1615,11 +1671,16 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.layoutSettings.direction
         );
 
+        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
         const updatedEdges = { ...state.visual.edges };
         for (const relId of state.semantic.relationOrder) {
           const prevEdge = updatedEdges[relId];
           const smart = smartHandles[relId];
           if (prevEdge && smart) {
+            // PRESERVATION GUARANTEE: Never overwrite manual handles or freeform canvas edges
+            if (prevEdge.manualHandles || isFreeform) {
+              continue;
+            }
             updatedEdges[relId] = {
               ...prevEdge,
               sourceHandle: smart.sourceHandle,
@@ -1818,7 +1879,12 @@ export const useConceptMapStore = create<ConceptMapState>()(
         targetId: ConceptId,
         linkingPhrase?: string,
         type: RelationType = 'hierarchical',
-        handles?: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition }
+        handles?: {
+          sourceHandle?: HandlePosition;
+          targetHandle?: HandlePosition;
+          manualHandles?: boolean;
+        },
+        arrowDirection: ArrowDirection = 'forward'
       ): RelationId | null => {
         const state = get();
         if (!state.semantic.concepts[sourceId] || !state.semantic.concepts[targetId]) {
@@ -1826,6 +1892,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
         }
 
         const isFlowchart = state.semantic.diagramMode === 'flowchart';
+        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
         const relationId = generateUniqueRelationId(state.semantic.relations);
         const orderIndex = state.semantic.relationOrder.length + 1;
         const defaultPhrase = isFlowchart ? '' : 'relaciona-se com';
@@ -1852,6 +1919,16 @@ export const useConceptMapStore = create<ConceptMapState>()(
                   ? 'hierárquica'
                   : 'ligação cruzada';
 
+        // Determine whether handles are manual
+        const isExplicitHandle =
+          Boolean(handles?.sourceHandle && handles.sourceHandle !== 'auto') ||
+          Boolean(handles?.targetHandle && handles.targetHandle !== 'auto');
+
+        const isManual =
+          handles?.manualHandles !== undefined
+            ? handles.manualHandles
+            : (isExplicitHandle || isFreeform);
+
         const nextSemantic: SemanticModel = {
           ...state.semantic,
           relations: {
@@ -1865,6 +1942,8 @@ export const useConceptMapStore = create<ConceptMapState>()(
               type: actualType,
               flowKind,
               rawType,
+              manualHandles: isManual,
+              arrowDirection,
               sourceMeta: {
                 createdManually: true,
               },
@@ -1884,15 +1963,26 @@ export const useConceptMapStore = create<ConceptMapState>()(
           ? 'smoothstep'
           : (actualType === 'hierarchical' ? 'smoothstep' : 'bezier');
 
+        // Resolve source and target handles
+        const resolvedSourceHandle: HandlePosition =
+          handles?.sourceHandle && handles.sourceHandle !== 'auto'
+            ? handles.sourceHandle
+            : (smartHandles[relationId]?.sourceHandle ?? 'bottom');
+
+        const resolvedTargetHandle: HandlePosition =
+          handles?.targetHandle && handles.targetHandle !== 'auto'
+            ? handles.targetHandle
+            : (smartHandles[relationId]?.targetHandle ?? 'top');
+
         const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
           ...state.visual.edges,
           [relationId]: {
             relationId,
             curveType: defaultCurve,
-            sourceHandle:
-              handles?.sourceHandle ?? smartHandles[relationId]?.sourceHandle ?? 'bottom',
-            targetHandle:
-              handles?.targetHandle ?? smartHandles[relationId]?.targetHandle ?? 'top',
+            sourceHandle: resolvedSourceHandle,
+            targetHandle: resolvedTargetHandle,
+            manualHandles: isManual,
+            arrowDirection,
             labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
             flowKind,
           },
@@ -1937,13 +2027,29 @@ export const useConceptMapStore = create<ConceptMapState>()(
         return relationId;
       },
 
-      updateRelation: (relationId: RelationId, updates) => {
+      updateRelation: (
+        relationId: RelationId,
+        updates: {
+          linkingPhrase?: string;
+          type?: RelationType;
+          sourceId?: ConceptId;
+          targetId?: ConceptId;
+          curveType?: EdgeCurveType;
+          sourceHandle?: HandlePosition;
+          targetHandle?: HandlePosition;
+          manualHandles?: boolean;
+          arrowDirection?: ArrowDirection;
+          labelOffset?: { x?: number; y?: number; t?: number };
+        }
+      ) => {
         const state = get();
         const existingRel = state.semantic.relations[relationId];
         const existingEdge = state.visual.edges[relationId];
         if (!existingRel || !existingEdge) return;
 
         const isFlowchart = state.semantic.diagramMode === 'flowchart';
+        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
+
         const nextType = updates.type ?? existingRel.type;
         const nextSourceId =
           updates.sourceId && state.semantic.concepts[updates.sourceId]
@@ -1953,7 +2059,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
           updates.targetId && state.semantic.concepts[updates.targetId]
             ? updates.targetId
             : existingRel.targetId;
-        // Preserva espaços digitados entre palavras nos campos de edição (sem remover espaço final a cada tecla)
+
         const nextPhrase =
           updates.linkingPhrase !== undefined
             ? updates.linkingPhrase.replace(/\r?\n/g, ' ')
@@ -1978,6 +2084,24 @@ export const useConceptMapStore = create<ConceptMapState>()(
                   ? 'hierárquica'
                   : 'ligação cruzada';
 
+        // 1. Resolve manualHandles status
+        let nextManual: boolean;
+        if (updates.manualHandles !== undefined) {
+          nextManual = updates.manualHandles;
+        } else if (updates.sourceHandle === 'auto' && updates.targetHandle === 'auto') {
+          nextManual = false;
+        } else if (
+          (updates.sourceHandle !== undefined && updates.sourceHandle !== 'auto') ||
+          (updates.targetHandle !== undefined && updates.targetHandle !== 'auto')
+        ) {
+          nextManual = true;
+        } else {
+          nextManual = existingEdge.manualHandles ?? isFreeform;
+        }
+
+        const preserveHandles = nextManual || isFreeform;
+
+        // Compute smart handles for fallback / auto-routing
         const nextSemantic: SemanticModel = {
           ...state.semantic,
           relations: {
@@ -1990,6 +2114,12 @@ export const useConceptMapStore = create<ConceptMapState>()(
               type: nextType,
               flowKind,
               rawType,
+              manualHandles: nextManual,
+              arrowDirection:
+                updates.arrowDirection ??
+                existingRel.arrowDirection ??
+                existingEdge.arrowDirection ??
+                'forward',
             },
           },
         };
@@ -1999,6 +2129,45 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.nodes,
           state.visual.layoutSettings.direction
         );
+
+        // 2. Resolve sourceHandle
+        let nextSourceHandle: HandlePosition;
+        if (updates.sourceHandle !== undefined) {
+          if (updates.sourceHandle === 'auto') {
+            nextSourceHandle = smartHandles[relationId]?.sourceHandle ?? 'bottom';
+          } else {
+            nextSourceHandle = updates.sourceHandle;
+          }
+        } else {
+          if (preserveHandles && existingEdge.sourceHandle && existingEdge.sourceHandle !== 'auto') {
+            nextSourceHandle = existingEdge.sourceHandle;
+          } else {
+            nextSourceHandle = smartHandles[relationId]?.sourceHandle ?? existingEdge.sourceHandle ?? 'bottom';
+          }
+        }
+
+        // 3. Resolve targetHandle
+        let nextTargetHandle: HandlePosition;
+        if (updates.targetHandle !== undefined) {
+          if (updates.targetHandle === 'auto') {
+            nextTargetHandle = smartHandles[relationId]?.targetHandle ?? 'top';
+          } else {
+            nextTargetHandle = updates.targetHandle;
+          }
+        } else {
+          if (preserveHandles && existingEdge.targetHandle && existingEdge.targetHandle !== 'auto') {
+            nextTargetHandle = existingEdge.targetHandle;
+          } else {
+            nextTargetHandle = smartHandles[relationId]?.targetHandle ?? existingEdge.targetHandle ?? 'top';
+          }
+        }
+
+        // 4. Resolve arrowDirection
+        const nextArrowDirection: ArrowDirection =
+          updates.arrowDirection ??
+          existingEdge.arrowDirection ??
+          existingRel.arrowDirection ??
+          'forward';
 
         const defaultCurveForType: EdgeCurveType = isFlowchart
           ? 'smoothstep'
@@ -2015,14 +2184,10 @@ export const useConceptMapStore = create<ConceptMapState>()(
             [relationId]: {
               ...existingEdge,
               curveType: nextCurveType,
-              sourceHandle:
-                updates.sourceHandle ??
-                smartHandles[relationId]?.sourceHandle ??
-                existingEdge.sourceHandle,
-              targetHandle:
-                updates.targetHandle ??
-                smartHandles[relationId]?.targetHandle ??
-                existingEdge.targetHandle,
+              sourceHandle: nextSourceHandle,
+              targetHandle: nextTargetHandle,
+              manualHandles: nextManual,
+              arrowDirection: nextArrowDirection,
               labelOffset: updates.labelOffset
                 ? { ...existingEdge.labelOffset, ...updates.labelOffset }
                 : existingEdge.labelOffset,
@@ -2051,11 +2216,21 @@ export const useConceptMapStore = create<ConceptMapState>()(
       reverseRelationDirection: (relationId: RelationId) => {
         const state = get();
         const rel = state.semantic.relations[relationId];
-        if (!rel) return;
+        const edge = state.visual.edges[relationId];
+        if (!rel || !edge) return;
+
+        const isManual = Boolean(edge.manualHandles || state.visual.layoutSettings.freeformCanvas);
 
         get().updateRelation(relationId, {
           sourceId: rel.targetId,
           targetId: rel.sourceId,
+          ...(isManual
+            ? {
+                sourceHandle: edge.targetHandle,
+                targetHandle: edge.sourceHandle,
+                manualHandles: true,
+              }
+            : {}),
         });
       },
 
@@ -2063,13 +2238,18 @@ export const useConceptMapStore = create<ConceptMapState>()(
         relationId: RelationId,
         newSourceId: ConceptId,
         newTargetId: ConceptId,
-        handles?: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition }
+        handles?: {
+          sourceHandle?: HandlePosition;
+          targetHandle?: HandlePosition;
+          manualHandles?: boolean;
+        }
       ) => {
         get().updateRelation(relationId, {
           sourceId: newSourceId,
           targetId: newTargetId,
           sourceHandle: handles?.sourceHandle,
           targetHandle: handles?.targetHandle,
+          manualHandles: handles?.manualHandles ?? true,
         });
       },
 

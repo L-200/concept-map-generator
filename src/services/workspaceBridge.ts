@@ -1,16 +1,24 @@
 import rawExemplo from '../../exemplo.md?raw';
 import rawFlowchart from '../../exemplo-fluxograma.md?raw';
+import rawFreeformJson from '../../exemplo-canvas-livre.cmap.json?raw';
+import rawFreeformMd from '../../exemplo-canvas-livre.md?raw';
 
 export interface DefaultInputPayload {
   fileName: string;
   content: string;
 }
 
-export type WorkspaceExampleFile = 'exemplo.md' | 'exemplo-fluxograma.md';
+export type WorkspaceExampleFile =
+  | 'exemplo.md'
+  | 'exemplo-fluxograma.md'
+  | 'exemplo-canvas-livre.cmap.json'
+  | 'exemplo-canvas-livre.md';
 
 const RAW_FALLBACKS: Record<string, string> = {
   'exemplo.md': rawExemplo,
   'exemplo-fluxograma.md': rawFlowchart,
+  'exemplo-canvas-livre.cmap.json': rawFreeformJson,
+  'exemplo-canvas-livre.md': rawFreeformMd,
 };
 
 /**
@@ -68,4 +76,18 @@ export async function fetchDefaultWorkspaceInput(): Promise<DefaultInputPayload>
  */
 export async function fetchFlowchartWorkspaceInput(): Promise<DefaultInputPayload> {
   return fetchWorkspaceInput('exemplo-fluxograma.md');
+}
+
+/**
+ * Busca o arquivo `exemplo-canvas-livre.cmap.json` padrão (Canvas Livre / Freeform com 7 formas, portas manuais e 4 direções de seta).
+ */
+export async function fetchFreeformWorkspaceInput(): Promise<DefaultInputPayload> {
+  return fetchWorkspaceInput('exemplo-canvas-livre.cmap.json');
+}
+
+/**
+ * Busca o arquivo `exemplo-canvas-livre.md` em formato Markdown (Canvas Livre / Freeform).
+ */
+export async function fetchFreeformMarkdownWorkspaceInput(): Promise<DefaultInputPayload> {
+  return fetchWorkspaceInput('exemplo-canvas-livre.md');
 }
