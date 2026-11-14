@@ -11,6 +11,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type IsValidConnection,
   type Node,
   type NodeChange,
   type OnConnectEnd,
@@ -27,6 +28,7 @@ import {
   PinOff,
   Plus,
   RefreshCw,
+  Shapes,
   Sparkles,
   Workflow,
 } from 'lucide-react';
@@ -38,9 +40,11 @@ import type {
   Point2D,
   RelationId,
 } from '../../domain/types';
+import { parseAndValidateJsonDocument } from '../../services/export/fileExporter';
 import {
   fetchDefaultWorkspaceInput,
   fetchFlowchartWorkspaceInput,
+  fetchFreeformWorkspaceInput,
 } from '../../services/workspaceBridge';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 import { ConceptNode, type ConceptFlowNode } from './ConceptNode';
@@ -89,6 +93,7 @@ export function ConceptMapCanvas() {
   const addConnectedConcept = useConceptMapStore((s) => s.addConnectedConcept);
   const createNewEmptyMap = useConceptMapStore((s) => s.createNewEmptyMap);
   const loadFromMarkdown = useConceptMapStore((s) => s.loadFromMarkdown);
+  const loadFromDocument = useConceptMapStore((s) => s.loadFromDocument);
   const addRelation = useConceptMapStore((s) => s.addRelation);
   const reconnectRelation = useConceptMapStore((s) => s.reconnectRelation);
   const setSelection = useConceptMapStore((s) => s.setSelection);
@@ -104,6 +109,24 @@ export function ConceptMapCanvas() {
   const [liveDragPositions, setLiveDragPositions] = useState<
     Record<ConceptId, Point2D>
   >({});
+
+  // Estado de conexão ativa para realce de portas no canvas livre
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  // Validação de conexões: impede apenas conectar a mesma porta nela mesma no mesmo bloco
+  const isValidConnection: IsValidConnection = useCallback(
+    (connection: Connection | Edge) => {
+      if (!connection.source || !connection.target) return false;
+      if (
+        connection.source === connection.target &&
+        connection.sourceHandle === connection.targetHandle
+      ) {
+        return false;
+      }
+      return true;
+    },
+    []
+  );
 
   // Referências para suportar "arrastar conexão para o vazio = criar novo conceito conectado"
   const connectingNodeIdRef = useRef<ConceptId | null>(null);
@@ -296,27 +319,47 @@ export function ConceptMapCanvas() {
                 ? '#d97706'
                 : '#475569';
 
+        const arrowDirection =
+          edgeVis.arrowDirection ?? rel.arrowDirection ?? 'forward';
+
+        const markerConfig = {
+          type: MarkerType.ArrowClosed,
+          width: 18,
+          height: 18,
+          color: arrowColor,
+        };
+
+        const markerEnd =
+          arrowDirection === 'forward' || arrowDirection === 'both'
+            ? markerConfig
+            : undefined;
+
+        const markerStart =
+          arrowDirection === 'reverse' || arrowDirection === 'both'
+            ? markerConfig
+            : undefined;
+
+        const resolvedSourceHandle =
+          edgeVis.sourceHandle && edgeVis.sourceHandle !== 'auto'
+            ? edgeVis.sourceHandle
+            : 'bottom';
+
+        const resolvedTargetHandle =
+          edgeVis.targetHandle && edgeVis.targetHandle !== 'auto'
+            ? edgeVis.targetHandle
+            : 'top';
+
         return {
           id: relId,
           type: 'proposition' as const,
           source: rel.sourceId,
           target: rel.targetId,
-          sourceHandle:
-            edgeVis.sourceHandle && edgeVis.sourceHandle !== 'auto'
-              ? edgeVis.sourceHandle
-              : 'bottom',
-          targetHandle:
-            edgeVis.targetHandle && edgeVis.targetHandle !== 'auto'
-              ? edgeVis.targetHandle
-              : 'top',
+          sourceHandle: resolvedSourceHandle,
+          targetHandle: resolvedTargetHandle,
           selected: isSelected,
           reconnectable: true,
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            width: 18,
-            height: 18,
-            color: arrowColor,
-          },
+          markerStart,
+          markerEnd,
           data: {
             relationId: relId,
             linkingPhrase: rel.linkingPhrase,
@@ -330,6 +373,10 @@ export function ConceptMapCanvas() {
             isSearchMatch,
             flowKind: rel.flowKind,
             diagramMode: semantic.diagramMode ?? 'concept-map',
+            sourceHandle: resolvedSourceHandle,
+            targetHandle: resolvedTargetHandle,
+            manualHandles: edgeVis.manualHandles ?? rel.manualHandles ?? false,
+            arrowDirection,
           },
         };
       })
@@ -426,6 +473,7 @@ export function ConceptMapCanvas() {
   const handleConnectStart: OnConnectStart = useCallback((_event, params) => {
     connectingNodeIdRef.current = params.nodeId;
     didConnectToExistingNodeRef.current = false;
+    setIsConnecting(true);
   }, []);
 
   const handleConnect = useCallback(
@@ -441,6 +489,7 @@ export function ConceptMapCanvas() {
         {
           sourceHandle: sanitizeHandle(connection.sourceHandle),
           targetHandle: sanitizeHandle(connection.targetHandle),
+          manualHandles: true,
         }
       );
     },
@@ -449,6 +498,7 @@ export function ConceptMapCanvas() {
 
   const handleConnectEnd: OnConnectEnd = useCallback(
     (event) => {
+      setIsConnecting(false);
       const sourceNodeId = connectingNodeIdRef.current;
       connectingNodeIdRef.current = null;
 
@@ -487,16 +537,25 @@ export function ConceptMapCanvas() {
     [addConnectedConcept, screenToFlowPosition, semantic.diagramMode]
   );
 
+  const handleReconnectStart = useCallback(() => {
+    setIsConnecting(true);
+  }, []);
+
   const handleReconnect: OnReconnect = useCallback(
     (oldEdge: Edge, newConnection: Connection) => {
       if (!newConnection.source || !newConnection.target) return;
       reconnectRelation(oldEdge.id, newConnection.source, newConnection.target, {
         sourceHandle: sanitizeHandle(newConnection.sourceHandle),
         targetHandle: sanitizeHandle(newConnection.targetHandle),
+        manualHandles: true,
       });
     },
     [reconnectRelation]
   );
+
+  const handleReconnectEnd = useCallback(() => {
+    setIsConnecting(false);
+  }, []);
 
   const handleMoveEnd: OnMoveEnd = useCallback(
     (_event, viewport) => {
@@ -551,15 +610,19 @@ export function ConceptMapCanvas() {
         edges={flowEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        className={isConnecting ? 'react-flow--connecting' : undefined}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onNodeDragStop={handleNodeDragStop}
         onConnectStart={handleConnectStart}
         onConnect={handleConnect}
         onConnectEnd={handleConnectEnd}
+        onReconnectStart={handleReconnectStart}
         onReconnect={handleReconnect}
+        onReconnectEnd={handleReconnectEnd}
         onMoveEnd={handleMoveEnd}
         onPaneClick={handlePaneClick}
+        isValidConnection={isValidConnection}
         connectionMode={ConnectionMode.Loose}
         selectionOnDrag
         panOnDrag={[1, 2]}
@@ -599,19 +662,19 @@ export function ConceptMapCanvas() {
           data-testid="welcome-panel"
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4"
         >
-          <div className="pointer-events-auto flex w-full max-w-2xl flex-col items-center rounded-2xl border border-slate-200/90 bg-white/95 p-6 shadow-2xl backdrop-blur">
+          <div className="pointer-events-auto flex w-full max-w-4xl flex-col items-center rounded-2xl border border-slate-200/90 bg-white/95 p-6 shadow-2xl backdrop-blur">
             <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-xs">
               <Sparkles className="h-6 w-6" />
             </div>
             <h2 className="text-base font-bold text-slate-900">
-              Comece seu Mapa Conceitual ou Fluxograma
+              Comece seu Mapa Conceitual, Fluxograma ou Canvas Livre
             </h2>
             <p className="mt-1 max-w-lg text-center text-xs leading-relaxed text-slate-600">
-              Crie diagramas estruturados a partir de modelos iniciais ou explore exemplos interativos prontos para edição.
+              Crie diagramas estruturados a partir de modelos iniciais, utilize o canvas livre irrestrito ou explore exemplos interativos.
             </p>
 
-            {/* Grade de Vias Duplas (Dual Pathways) */}
-            <div className="mt-5 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* Grade de Vias Triplas (Triple Pathways) */}
+            <div className="mt-5 grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
               {/* Via 1: Mapa Conceitual (Novak) */}
               <div className="flex flex-col justify-between rounded-xl border border-blue-100 bg-gradient-to-b from-blue-50/50 to-white p-4 shadow-xs">
                 <div>
@@ -694,6 +757,67 @@ export function ConceptMapCanvas() {
                   >
                     <RefreshCw className="h-3.5 w-3.5 text-indigo-600" />
                     Carregar exemplo-fluxograma.md
+                  </button>
+                </div>
+              </div>
+
+              {/* Via 3: Canvas Livre (Freeform) */}
+              <div className="flex flex-col justify-between rounded-xl border border-emerald-100 bg-gradient-to-b from-emerald-50/50 to-white p-4 shadow-xs">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                      <Shapes className="h-4 w-4 text-emerald-600" />
+                      Canvas Livre
+                    </span>
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                      Freeform
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
+                    Diagramação livre sem restrições heurísticas ou hierárquicas. Conecte qualquer ponto cardeal (topo, direita, base, esquerda) em qualquer formato.
+                  </p>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    data-testid="create-freeform-btn"
+                    onClick={() =>
+                      createNewEmptyMap(true, 'concept-map', {
+                        freeformCanvas: true,
+                      })
+                    }
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Iniciar Canvas Livre
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="load-freeform-example-btn"
+                    onClick={() => {
+                      fetchFreeformWorkspaceInput().then((p) => {
+                        const doc = parseAndValidateJsonDocument(p.content);
+                        loadFromDocument(doc);
+                      });
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3.5 py-1.5 text-xs font-medium text-emerald-800 transition hover:bg-emerald-50"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 text-emerald-600" />
+                    Carregar exemplo-canvas-livre
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="load-freeform-blank-btn"
+                    onClick={() =>
+                      createNewEmptyMap(false, 'concept-map', {
+                        freeformCanvas: true,
+                      })
+                    }
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                  >
+                    <Sparkles className="h-3 w-3 text-emerald-600" />
+                    Canvas em Branco
                   </button>
                 </div>
               </div>

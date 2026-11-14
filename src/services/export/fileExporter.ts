@@ -5,15 +5,24 @@ import {
   Position,
 } from '@xyflow/react';
 import type {
+  ArrowDirection,
   ConceptId,
   ConceptMapDocument,
+  ConceptRelationVisual,
+  CrossLinkVisibilityMode,
+  EdgeCurveType,
   FlowchartNodeShape,
   HandlePosition,
+  LayoutAlgorithmType,
+  LayoutSettings,
   Point2D,
+  RelationId,
   RelationType,
   SemanticModel,
+  ViewportState,
   VisualModel,
 } from '../../domain/types';
+import { computeSmartEdgeHandles } from '../layout/layoutEngine';
 import { estimateEdgeLabelDimensions } from '../layout/nodeSizing';
 import { serializeSemanticModelToMarkdown } from '../parser/markdownSerializer';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
@@ -374,6 +383,12 @@ export function generateStandaloneVectorSvg(
   const edgePathsSvg: string[] = [];
   const preparedLabels: PreparedEdgeLabel[] = [];
 
+  const smartHandles = computeSmartEdgeHandles(
+    semantic,
+    visual.nodes,
+    visual.layoutSettings?.direction ?? 'TB'
+  );
+
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
     const edgeVis = visual.edges[relId];
@@ -392,21 +407,32 @@ export function generateStandaloneVectorSvg(
     const tgtW = tgtNode.dimensions?.width ?? 180;
     const tgtH = tgtNode.dimensions?.height ?? 52;
 
+    const smart = smartHandles[relId];
+    const resolvedSourceHandle: HandlePosition =
+      edgeVis.sourceHandle && edgeVis.sourceHandle !== 'auto'
+        ? edgeVis.sourceHandle
+        : (smart?.sourceHandle ?? 'bottom');
+
+    const resolvedTargetHandle: HandlePosition =
+      edgeVis.targetHandle && edgeVis.targetHandle !== 'auto'
+        ? edgeVis.targetHandle
+        : (smart?.targetHandle ?? 'top');
+
     const srcPt = getHandlePoint(
       srcNode.position,
       srcW,
       srcH,
-      edgeVis.sourceHandle
+      resolvedSourceHandle
     );
     const tgtPt = getHandlePoint(
       tgtNode.position,
       tgtW,
       tgtH,
-      edgeVis.targetHandle
+      resolvedTargetHandle
     );
 
-    const sourcePosition = toFlowPosition(edgeVis.sourceHandle, true);
-    const targetPosition = toFlowPosition(edgeVis.targetHandle, false);
+    const sourcePosition = toFlowPosition(resolvedSourceHandle, true);
+    const targetPosition = toFlowPosition(resolvedTargetHandle, false);
 
     const pairKey =
       rel.sourceId < rel.targetId
@@ -483,6 +509,8 @@ export function generateStandaloneVectorSvg(
         norm === 'n' ||
         norm === 'f');
 
+    const isLoop = rel.type === 'loop-back';
+
     const stroke = isCross
       ? '#d97706'
       : isYes
@@ -491,17 +519,35 @@ export function generateStandaloneVectorSvg(
           ? '#e11d48'
           : '#475569';
     const dashAttr =
-      isCross || rel.type === 'loop-back' ? ' stroke-dasharray="8 5"' : '';
-    const markerId = isCross
-      ? 'url(#arrow-cross)'
+      isCross || isLoop ? ' stroke-dasharray="8 5"' : '';
+
+    const markerBase = isCross
+      ? 'arrow-cross'
       : isYes
-        ? 'url(#arrow-yes)'
+        ? 'arrow-yes'
         : isNo
-          ? 'url(#arrow-no)'
-          : 'url(#arrow-hier)';
+          ? 'arrow-no'
+          : isLoop
+            ? 'arrow-loop'
+            : 'arrow-hier';
+
+    const arrowDirection: ArrowDirection =
+      edgeVis.arrowDirection ?? rel.arrowDirection ?? 'forward';
+
+    const hasStartMarker =
+      arrowDirection === 'reverse' || arrowDirection === 'both';
+    const hasEndMarker =
+      arrowDirection === 'forward' || arrowDirection === 'both';
+
+    const markerStartAttr = hasStartMarker
+      ? ` marker-start="url(#${markerBase})"`
+      : '';
+    const markerEndAttr = hasEndMarker
+      ? ` marker-end="url(#${markerBase})"`
+      : '';
 
     edgePathsSvg.push(
-      `    <path id="edge-${escapeXml(rel.id)}" d="${path}" fill="none" stroke="${stroke}" stroke-width="2"${dashAttr} marker-end="${markerId}" />`
+      `    <path id="edge-${escapeXml(rel.id)}" d="${path}" fill="none" stroke="${stroke}" stroke-width="2"${dashAttr}${markerStartAttr}${markerEndAttr} />`
     );
 
     const t = edgeVis.labelOffset?.t ?? 0.5;
@@ -729,6 +775,24 @@ export function generateStandaloneVectorSvg(
     <marker id="arrow-no" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 1 L 10 5 L 0 9 z" fill="#e11d48" />
     </marker>
+    <marker id="arrow-loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569" />
+    </marker>
+    <marker id="arrow-hier-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 10 1 L 0 5 L 10 9 z" fill="#475569" />
+    </marker>
+    <marker id="arrow-cross-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 10 1 L 0 5 L 10 9 z" fill="#d97706" />
+    </marker>
+    <marker id="arrow-yes-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 10 1 L 0 5 L 10 9 z" fill="#059669" />
+    </marker>
+    <marker id="arrow-no-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 10 1 L 0 5 L 10 9 z" fill="#e11d48" />
+    </marker>
+    <marker id="arrow-loop-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 10 1 L 0 5 L 10 9 z" fill="#475569" />
+    </marker>
   </defs>
   <rect x="${viewBoxX}" y="${viewBoxY}" width="${viewBoxW}" height="${viewBoxH}" fill="#f8fafc" />
   <g id="edges-layer">
@@ -827,6 +891,42 @@ export function serializeDocumentToJson(doc: ConceptMapDocument): string {
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
+const VALID_HANDLES: ReadonlySet<string> = new Set([
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'auto',
+]);
+
+const VALID_ARROW_DIRECTIONS: ReadonlySet<string> = new Set([
+  'forward',
+  'reverse',
+  'both',
+  'none',
+]);
+
+const VALID_CURVE_TYPES: ReadonlySet<string> = new Set([
+  'bezier',
+  'smoothstep',
+  'straight',
+]);
+
+const VALID_LAYOUT_ALGORITHMS: ReadonlySet<string> = new Set([
+  'novak-backbone',
+  'elk-layered',
+  'dagre-hierarchical',
+  'force-directed',
+  'radial-tree',
+]);
+
+const VALID_CROSS_LINK_VISIBILITY: ReadonlySet<string> = new Set([
+  'all',
+  'hover-only',
+  'highlight-cross',
+  'hide-cross',
+]);
+
 /**
  * Faz o parse e valida a integridade estrutural de um arquivo JSON de mapa conceitual importado.
  */
@@ -852,8 +952,15 @@ export function parseAndValidateJsonDocument(
     );
   }
 
+  // 1. Validação de Nós Visuais
+  const allConceptIds = Array.from(
+    new Set([
+      ...(parsed.semantic.conceptOrder || []),
+      ...Object.keys(parsed.semantic.concepts || {}),
+    ])
+  );
   const validatedNodes: Record<ConceptId, VisualModel['nodes'][string]> = {};
-  for (const id of parsed.semantic.conceptOrder) {
+  for (const id of allConceptIds) {
     const n = parsed.visual.nodes[id];
     validatedNodes[id] = {
       conceptId: id,
@@ -870,19 +977,142 @@ export function parseAndValidateJsonDocument(
     };
   }
 
+  // 2. Validação e Sanitização de Arestas Visuais (visual.edges)
+  const allRelationIds = Array.from(
+    new Set([
+      ...(parsed.semantic.relationOrder || []),
+      ...Object.keys(parsed.semantic.relations || {}),
+      ...Object.keys(parsed.visual.edges || {}),
+    ])
+  );
+
+  const validatedEdges: Record<RelationId, ConceptRelationVisual> = {};
+  for (const id of allRelationIds) {
+    const e = parsed.visual.edges[id] as Partial<ConceptRelationVisual> | undefined;
+
+    const sourceHandle =
+      e?.sourceHandle && VALID_HANDLES.has(e.sourceHandle)
+        ? (e.sourceHandle as HandlePosition)
+        : undefined;
+
+    const targetHandle =
+      e?.targetHandle && VALID_HANDLES.has(e.targetHandle)
+        ? (e.targetHandle as HandlePosition)
+        : undefined;
+
+    const arrowDirection =
+      e?.arrowDirection && VALID_ARROW_DIRECTIONS.has(e.arrowDirection)
+        ? (e.arrowDirection as ArrowDirection)
+        : 'forward';
+
+    const curveType =
+      e?.curveType && VALID_CURVE_TYPES.has(e.curveType)
+        ? (e.curveType as EdgeCurveType)
+        : 'smoothstep';
+
+    const manualHandles =
+      typeof e?.manualHandles === 'boolean'
+        ? e.manualHandles
+        : Boolean(
+            (sourceHandle && sourceHandle !== 'auto') ||
+            (targetHandle && targetHandle !== 'auto')
+          );
+
+    validatedEdges[id] = {
+      relationId: id,
+      curveType,
+      sourceHandle,
+      targetHandle,
+      manualHandles,
+      arrowDirection,
+      labelOffset: e?.labelOffset
+        ? {
+            x: Number.isFinite(e.labelOffset.x) ? e.labelOffset.x : undefined,
+            y: Number.isFinite(e.labelOffset.y) ? e.labelOffset.y : undefined,
+            t: Number.isFinite(e.labelOffset.t) ? e.labelOffset.t : undefined,
+          }
+        : undefined,
+      waypoints: Array.isArray(e?.waypoints)
+        ? e.waypoints.filter(
+            (pt): pt is Point2D =>
+              pt !== null &&
+              typeof pt === 'object' &&
+              Number.isFinite(pt.x) &&
+              Number.isFinite(pt.y)
+          )
+        : undefined,
+      style: e?.style && typeof e.style === 'object' ? e.style : undefined,
+      flowKind: e?.flowKind,
+    };
+  }
+
+  // 3. Validação de Layout Settings (incluindo freeformCanvas)
+  const rawLayout = parsed.visual.layoutSettings;
+  const validatedLayoutSettings: LayoutSettings = {
+    algorithm:
+      rawLayout?.algorithm && VALID_LAYOUT_ALGORITHMS.has(rawLayout.algorithm)
+        ? (rawLayout.algorithm as LayoutAlgorithmType)
+        : 'novak-backbone',
+    direction: rawLayout?.direction === 'LR' ? 'LR' : 'TB',
+    nodeSpacingX:
+      typeof rawLayout?.nodeSpacingX === 'number' && Number.isFinite(rawLayout.nodeSpacingX)
+        ? rawLayout.nodeSpacingX
+        : 75,
+    nodeSpacingY:
+      typeof rawLayout?.nodeSpacingY === 'number' && Number.isFinite(rawLayout.nodeSpacingY)
+        ? rawLayout.nodeSpacingY
+        : 110,
+    layerSpacing:
+      typeof rawLayout?.layerSpacing === 'number' && Number.isFinite(rawLayout.layerSpacing)
+        ? rawLayout.layerSpacing
+        : 115,
+    respectPinnedNodes:
+      rawLayout?.respectPinnedNodes !== undefined
+        ? Boolean(rawLayout.respectPinnedNodes)
+        : true,
+    freeformCanvas: Boolean(rawLayout?.freeformCanvas),
+  };
+
+  // 4. Validação de Viewport e CrossLinkVisibility
+  const rawViewport = parsed.visual.viewport;
+  const validatedViewport: ViewportState = {
+    x: Number.isFinite(rawViewport?.x) ? rawViewport!.x : 0,
+    y: Number.isFinite(rawViewport?.y) ? rawViewport!.y : 0,
+    zoom:
+      Number.isFinite(rawViewport?.zoom) && (rawViewport!.zoom as number) > 0
+        ? (rawViewport!.zoom as number)
+        : 1,
+  };
+
+  const rawCross = parsed.visual.crossLinkVisibility;
+  const validatedCrossLinkVisibility: CrossLinkVisibilityMode =
+    rawCross && VALID_CROSS_LINK_VISIBILITY.has(rawCross)
+      ? (rawCross as CrossLinkVisibilityMode)
+      : 'all';
+
+  const diagramMode = parsed.metadata?.diagramMode ?? parsed.semantic.diagramMode;
+  const validatedSemantic: SemanticModel = {
+    ...parsed.semantic,
+    diagramMode: diagramMode ?? parsed.semantic.diagramMode,
+  };
+
   return {
     schemaVersion: '1.0.0',
     metadata: {
       id: parsed.metadata?.id ?? 'imported-doc',
       sourceFileName: parsed.metadata?.sourceFileName ?? 'mapa.cmap.json',
       createdAt: parsed.metadata?.createdAt ?? new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      updatedAt: parsed.metadata?.updatedAt ?? new Date().toISOString(),
       originalColumnCount: parsed.metadata?.originalColumnCount ?? 5,
+      diagramMode,
     },
-    semantic: parsed.semantic,
+    semantic: validatedSemantic,
     visual: {
-      ...parsed.visual,
       nodes: validatedNodes,
+      edges: validatedEdges,
+      layoutSettings: validatedLayoutSettings,
+      viewport: validatedViewport,
+      crossLinkVisibility: validatedCrossLinkVisibility,
     },
     parseDiagnostics: parsed.parseDiagnostics ?? [],
   };

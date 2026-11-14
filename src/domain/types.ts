@@ -73,6 +73,26 @@ export type RelationType =
   | 'loop-back';
 
 /**
+ * Sentido da seta nas conexões/arestas:
+ * - 'forward': seta apontando para o bloco de destino (padrão Novak e fluxogramas)
+ * - 'reverse': seta apontando para o bloco de origem
+ * - 'both': setas em ambas as extremidades (conexão bidirecional)
+ * - 'none': sem setas em nenhuma extremidade (linha simples não direcionada)
+ */
+export type ArrowDirection = 'forward' | 'reverse' | 'both' | 'none';
+
+/** Lista imutável de todas as direções de seta suportadas */
+export const ALL_ARROW_DIRECTIONS: readonly ArrowDirection[] = [
+  'forward',
+  'reverse',
+  'both',
+  'none',
+] as const;
+
+/** Direção de seta padrão para novas conexões */
+export const DEFAULT_ARROW_DIRECTION: ArrowDirection = 'forward';
+
+/**
  * ============================================================================
  * 1. CAMADA SEMÂNTICA (Independente de UI, coordenadas ou biblioteca gráfica)
  * ============================================================================
@@ -112,6 +132,15 @@ export interface ConceptRelationSemantic {
   type: RelationType;
   /** Modalidade específica da transição de fluxo ('sequence' | 'conditional' | 'loop-back') */
   flowKind?: FlowTransitionKind;
+  /**
+   * Sentido direcional da relação ('forward' | 'reverse' | 'both' | 'none').
+   * Opcional; padrão semântico é 'forward'.
+   */
+  arrowDirection?: ArrowDirection;
+  /**
+   * Indica se as portas de conexão da relação foram travadas manualmente pelo usuário.
+   */
+  manualHandles?: boolean;
   /** Texto original da coluna Tipo no Markdown (ex: "hierárquica" | "ligação cruzada" | "condicional") */
   rawType?: string;
   /** Metadados de rastreabilidade da linha original */
@@ -121,6 +150,9 @@ export interface ConceptRelationSemantic {
     createdManually?: boolean;
   };
 }
+
+/** Alias para compatibilidade semântica com contratos de Proposição/Relação */
+export type SemanticRelation = ConceptRelationSemantic;
 
 export interface SemanticGraphMetrics {
   totalConcepts: number;
@@ -215,6 +247,17 @@ export interface ConceptRelationVisual {
   curveType: EdgeCurveType;
   sourceHandle?: HandlePosition;
   targetHandle?: HandlePosition;
+  /**
+   * Indica se sourceHandle e/ou targetHandle foram escolhidos manualmente pelo usuário
+   * (via arraste entre portas específicas, reconexão de ponta de aresta ou seleção no PropertyInspector).
+   * Impede que o motor de layout sobrescreva as portas com heurísticas automáticas.
+   */
+  manualHandles?: boolean;
+  /**
+   * Sentido visual da seta da conexão ('forward' | 'reverse' | 'both' | 'none').
+   * Padrão visual: 'forward'.
+   */
+  arrowDirection?: ArrowDirection;
   /** Posição paramétrica (t entre 0.15 e 0.85) ou deslocamento da frase de ligação */
   labelOffset?: {
     x?: number;
@@ -226,6 +269,9 @@ export interface ConceptRelationVisual {
   /** Modalidade visual do fluxo (opcional) */
   flowKind?: FlowTransitionKind;
 }
+
+/** Alias para compatibilidade visual com contratos de Proposição/Aresta */
+export type PropositionEdgeVisual = ConceptRelationVisual;
 
 export type LayoutAlgorithmType =
   | 'novak-backbone'
@@ -248,6 +294,12 @@ export interface LayoutSettings {
   layerSpacing: number;
   /** Preservar nós com `pinned: true` ao recalcular o layout */
   respectPinnedNodes: boolean;
+  /**
+   * Modo de Canvas Livre (Freeform Canvas):
+   * Quando ativado (`true`), nenhuma regra semântica de fluxograma ou heurística
+   * de layout automático força portas, tipos ou posições de arestas/nós.
+   */
+  freeformCanvas?: boolean;
 }
 
 export interface ViewportState {
@@ -304,6 +356,10 @@ export interface CanvasEdgeData extends Record<string, unknown> {
   flowKind?: FlowTransitionKind;
   /** Modo do diagrama para estilização contextual */
   diagramMode?: DiagramMode;
+  /** Indica se os handles da aresta foram selecionados manualmente */
+  manualHandles?: boolean;
+  /** Direção da seta renderizada no canvas */
+  arrowDirection?: ArrowDirection;
 }
 
 /** Alias para compatibilidade com o componente PropositionEdge */
@@ -383,5 +439,12 @@ export function isFlowTransitionKind(value: unknown): value is FlowTransitionKin
     value === 'sequence' ||
     value === 'conditional' ||
     value === 'loop-back'
+  );
+}
+
+export function isArrowDirection(value: unknown): value is ArrowDirection {
+  return (
+    typeof value === 'string' &&
+    (ALL_ARROW_DIRECTIONS as readonly string[]).includes(value)
   );
 }

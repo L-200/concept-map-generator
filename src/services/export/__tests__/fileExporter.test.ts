@@ -305,6 +305,95 @@ describe('FileExporter & Persistência Completa (Etapas 6 e 7)', () => {
         expect(svg).toContain('data-shape="document"');
       }
     });
+
+    describe('Milestone 4: Fidelidade Vetorial de Conexões e Direções de Seta', () => {
+      it('renderiza marcadores dinâmicos de seta conforme arrowDirection em exportação SVG', () => {
+        const store = useConceptMapStore.getState();
+        store.createNewEmptyMap(false, 'flowchart', { freeformCanvas: true });
+
+        const n1 = store.addConcept('Início', { x: 100, y: 100 });
+        const n2 = store.addConcept('Fim', { x: 300, y: 100 });
+
+        // Forward
+        const r1 = store.addRelation(n1, n2, 'avança', 'sequence', undefined, 'forward');
+        // Reverse
+        const r2 = store.addRelation(n1, n2, 'recua', 'sequence', undefined, 'reverse');
+        // Both
+        const r3 = store.addRelation(n1, n2, 'sincroniza', 'sequence', undefined, 'both');
+        // None
+        const r4 = store.addRelation(n1, n2, 'conecta', 'sequence', undefined, 'none');
+
+        const state = useConceptMapStore.getState();
+        const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+        const p1 = svg.match(new RegExp(`<path id="edge-${r1}"[^>]+>`))?.[0] ?? '';
+        expect(p1).toContain('marker-end=');
+        expect(p1).not.toContain('marker-start=');
+
+        const p2 = svg.match(new RegExp(`<path id="edge-${r2}"[^>]+>`))?.[0] ?? '';
+        expect(p2).toContain('marker-start=');
+        expect(p2).not.toContain('marker-end=');
+
+        const p3 = svg.match(new RegExp(`<path id="edge-${r3}"[^>]+>`))?.[0] ?? '';
+        expect(p3).toContain('marker-start=');
+        expect(p3).toContain('marker-end=');
+
+        const p4 = svg.match(new RegExp(`<path id="edge-${r4}"[^>]+>`))?.[0] ?? '';
+        expect(p4).not.toContain('marker-start=');
+        expect(p4).not.toContain('marker-end=');
+      });
+
+      it('utiliza computeSmartEdgeHandles como fallback quando handles são automáticos ou indefinidos', () => {
+        const store = useConceptMapStore.getState();
+        store.createNewEmptyMap(false, 'flowchart');
+
+        const nA = store.addConcept('A', { x: 200, y: 100 });
+        const nB = store.addConcept('B', { x: 200, y: 300 });
+        store.resizeNode(nA, { width: 140, height: 50 });
+        store.resizeNode(nB, { width: 140, height: 50 });
+
+        const relId = store.addRelation(nA, nB, 'desce', 'sequence');
+        store.updateRelation(relId!, { curveType: 'straight' });
+
+        const state = useConceptMapStore.getState();
+        const svg = generateStandaloneVectorSvg(state.semantic, state.visual);
+
+        // Origem (nA): (200 + 70, 100 + 50) = (270, 150)
+        // Destino (nB): (200 + 70, 300) = (270, 300) [topo, não base]
+        const pathRegex = new RegExp(`<path id="edge-${relId}" d="M\\s*([0-9.]+)[,\\s]+([0-9.]+)[^L]*L\\s*([0-9.]+)[,\\s]+([0-9.]+)`);
+        const match = pathRegex.exec(svg);
+        expect(match).toBeTruthy();
+
+        const startY = parseFloat(match![2]);
+        const endY = parseFloat(match![4]);
+        expect(startY).toBeCloseTo(150, 0);
+        expect(endY).toBeCloseTo(300, 0);
+      });
+
+      it('preserva campos do Canvas Livre e direção de seta na validação e serialização JSON', () => {
+        const store = useConceptMapStore.getState();
+        store.createNewEmptyMap(false, 'flowchart', { freeformCanvas: true });
+
+        const n1 = store.addConcept('Nó 1', { x: 100, y: 100 });
+        const n2 = store.addConcept('Nó 2', { x: 300, y: 100 });
+
+        const relId = store.addRelation(n1, n2, 'conecta', 'sequence', {
+          sourceHandle: 'right',
+          targetHandle: 'left',
+          manualHandles: true,
+        }, 'both');
+
+        const doc = store.exportDocument();
+        const json = serializeDocumentToJson(doc);
+        const parsed = parseAndValidateJsonDocument(json);
+
+        expect(parsed.visual.layoutSettings.freeformCanvas).toBe(true);
+        expect(parsed.visual.edges[relId!].sourceHandle).toBe('right');
+        expect(parsed.visual.edges[relId!].targetHandle).toBe('left');
+        expect(parsed.visual.edges[relId!].manualHandles).toBe(true);
+        expect(parsed.visual.edges[relId!].arrowDirection).toBe('both');
+      });
+    });
   });
 });
 

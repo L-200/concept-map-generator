@@ -1,0 +1,480 @@
+{
+  "schemaVersion": "1.0.0",
+  "metadata": {
+    "id": "freeform-showcase-doc",
+    "sourceFileName": "exemplo-canvas-livre.cmap.json",
+    "createdAt": "2026-11-14T21:00:00.000Z",
+    "updatedAt": "2026-11-14T21:00:00.000Z",
+    "originalColumnCount": 5,
+    "diagramMode": "concept-map"
+  },
+  "semantic": {
+    "title": "Arquitetura Distribuída de IA e Observabilidade (Canvas Livre)",
+    "diagramMode": "concept-map",
+    "concepts": {
+      "concept-cliente-web": {
+        "id": "concept-cliente-web",
+        "label": "Aplicação Cliente / Portal Web",
+        "normalizedKey": "aplicacao cliente / portal web",
+        "nodeShape": "terminal",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-api-gateway": {
+        "id": "concept-api-gateway",
+        "label": "API Gateway & Rate Limiter?",
+        "normalizedKey": "api gateway & rate limiter?",
+        "nodeShape": "decision",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-orquestrador-ia": {
+        "id": "concept-orquestrador-ia",
+        "label": "Orquestrador de Agentes de IA",
+        "normalizedKey": "orquestrador de agentes de ia",
+        "nodeShape": "concept",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-fila-eventos": {
+        "id": "concept-fila-eventos",
+        "label": "Stream de Eventos Kafka (I/O)",
+        "normalizedKey": "stream de eventos kafka (i/o)",
+        "nodeShape": "io",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-worker-rag": {
+        "id": "concept-worker-rag",
+        "label": "Sub-rotina de Indexação Vetorial",
+        "normalizedKey": "sub-rotina de indexacao vetorial",
+        "nodeShape": "subroutine",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-motor-inferencia": {
+        "id": "concept-motor-inferencia",
+        "label": "Cluster de Inferência GPU",
+        "normalizedKey": "cluster de inferencia gpu",
+        "nodeShape": "process",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "concept-relatorio-auditoria": {
+        "id": "concept-relatorio-auditoria",
+        "label": "Log Imutável & Relatório de Auditoria",
+        "normalizedKey": "log imutavel & relatorio de auditoria",
+        "nodeShape": "document",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      }
+    },
+    "conceptOrder": [
+      "concept-cliente-web",
+      "concept-api-gateway",
+      "concept-orquestrador-ia",
+      "concept-fila-eventos",
+      "concept-worker-rag",
+      "concept-motor-inferencia",
+      "concept-relatorio-auditoria"
+    ],
+    "relations": {
+      "rel-1": {
+        "id": "rel-1",
+        "orderIndex": 1,
+        "sourceId": "concept-cliente-web",
+        "linkingPhrase": "requisição HTTPS / WebSocket",
+        "targetId": "concept-api-gateway",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "both",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-2": {
+        "id": "rel-2",
+        "orderIndex": 2,
+        "sourceId": "concept-api-gateway",
+        "linkingPhrase": "autorizado (rota principal)",
+        "targetId": "concept-orquestrador-ia",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-3": {
+        "id": "rel-3",
+        "orderIndex": 3,
+        "sourceId": "concept-api-gateway",
+        "linkingPhrase": "bloqueio / alerta de cota",
+        "targetId": "concept-relatorio-auditoria",
+        "type": "cross-link",
+        "rawType": "ligação cruzada",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-4": {
+        "id": "rel-4",
+        "orderIndex": 4,
+        "sourceId": "concept-orquestrador-ia",
+        "linkingPhrase": "consulta e sincroniza contexto",
+        "targetId": "concept-worker-rag",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "both",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-5": {
+        "id": "rel-5",
+        "orderIndex": 5,
+        "sourceId": "concept-orquestrador-ia",
+        "linkingPhrase": "despacha prompt estruturado",
+        "targetId": "concept-motor-inferencia",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-6": {
+        "id": "rel-6",
+        "orderIndex": 6,
+        "sourceId": "concept-orquestrador-ia",
+        "linkingPhrase": "stream de tokens gerados",
+        "targetId": "concept-motor-inferencia",
+        "type": "cross-link",
+        "rawType": "ligação cruzada",
+        "manualHandles": true,
+        "arrowDirection": "reverse",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-7": {
+        "id": "rel-7",
+        "orderIndex": 7,
+        "sourceId": "concept-orquestrador-ia",
+        "linkingPhrase": "publica telemetria assíncrona",
+        "targetId": "concept-fila-eventos",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-8": {
+        "id": "rel-8",
+        "orderIndex": 8,
+        "sourceId": "concept-fila-eventos",
+        "linkingPhrase": "alimenta pipeline de embeddings",
+        "targetId": "concept-worker-rag",
+        "type": "cross-link",
+        "rawType": "ligação cruzada",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-9": {
+        "id": "rel-9",
+        "orderIndex": 9,
+        "sourceId": "concept-fila-eventos",
+        "linkingPhrase": "consolida trilha de conformidade",
+        "targetId": "concept-relatorio-auditoria",
+        "type": "hierarchical",
+        "rawType": "hierárquica",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      },
+      "rel-10": {
+        "id": "rel-10",
+        "orderIndex": 10,
+        "sourceId": "concept-motor-inferencia",
+        "linkingPhrase": "barramento compartilhado de métricas",
+        "targetId": "concept-relatorio-auditoria",
+        "type": "cross-link",
+        "rawType": "ligação cruzada",
+        "manualHandles": true,
+        "arrowDirection": "none",
+        "sourceMeta": {
+          "createdManually": true
+        }
+      }
+    },
+    "relationOrder": [
+      "rel-1",
+      "rel-2",
+      "rel-3",
+      "rel-4",
+      "rel-5",
+      "rel-6",
+      "rel-7",
+      "rel-8",
+      "rel-9",
+      "rel-10"
+    ]
+  },
+  "visual": {
+    "nodes": {
+      "concept-cliente-web": {
+        "conceptId": "concept-cliente-web",
+        "position": {
+          "x": 420,
+          "y": 40
+        },
+        "dimensions": {
+          "width": 230,
+          "height": 54
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 0,
+        "nodeShape": "terminal"
+      },
+      "concept-api-gateway": {
+        "conceptId": "concept-api-gateway",
+        "position": {
+          "x": 405,
+          "y": 175
+        },
+        "dimensions": {
+          "width": 260,
+          "height": 110
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 1,
+        "nodeShape": "decision"
+      },
+      "concept-orquestrador-ia": {
+        "conceptId": "concept-orquestrador-ia",
+        "position": {
+          "x": 420,
+          "y": 370
+        },
+        "dimensions": {
+          "width": 230,
+          "height": 58
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 2,
+        "nodeShape": "concept"
+      },
+      "concept-worker-rag": {
+        "conceptId": "concept-worker-rag",
+        "position": {
+          "x": 60,
+          "y": 365
+        },
+        "dimensions": {
+          "width": 240,
+          "height": 64
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 2,
+        "nodeShape": "subroutine"
+      },
+      "concept-motor-inferencia": {
+        "conceptId": "concept-motor-inferencia",
+        "position": {
+          "x": 780,
+          "y": 365
+        },
+        "dimensions": {
+          "width": 220,
+          "height": 60
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 2,
+        "nodeShape": "process"
+      },
+      "concept-fila-eventos": {
+        "conceptId": "concept-fila-eventos",
+        "position": {
+          "x": 210,
+          "y": 560
+        },
+        "dimensions": {
+          "width": 235,
+          "height": 60
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 3,
+        "nodeShape": "io"
+      },
+      "concept-relatorio-auditoria": {
+        "conceptId": "concept-relatorio-auditoria",
+        "position": {
+          "x": 620,
+          "y": 555
+        },
+        "dimensions": {
+          "width": 250,
+          "height": 68
+        },
+        "pinned": true,
+        "customSize": false,
+        "computedLayer": 3,
+        "nodeShape": "document"
+      }
+    },
+    "edges": {
+      "rel-1": {
+        "relationId": "rel-1",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "manualHandles": true,
+        "arrowDirection": "both",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-2": {
+        "relationId": "rel-2",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-3": {
+        "relationId": "rel-3",
+        "curveType": "bezier",
+        "sourceHandle": "right",
+        "targetHandle": "top",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.45
+        }
+      },
+      "rel-4": {
+        "relationId": "rel-4",
+        "curveType": "smoothstep",
+        "sourceHandle": "left",
+        "targetHandle": "right",
+        "manualHandles": true,
+        "arrowDirection": "both",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-5": {
+        "relationId": "rel-5",
+        "curveType": "smoothstep",
+        "sourceHandle": "right",
+        "targetHandle": "left",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-6": {
+        "relationId": "rel-6",
+        "curveType": "bezier",
+        "sourceHandle": "bottom",
+        "targetHandle": "bottom",
+        "manualHandles": true,
+        "arrowDirection": "reverse",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-7": {
+        "relationId": "rel-7",
+        "curveType": "smoothstep",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-8": {
+        "relationId": "rel-8",
+        "curveType": "smoothstep",
+        "sourceHandle": "left",
+        "targetHandle": "bottom",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-9": {
+        "relationId": "rel-9",
+        "curveType": "smoothstep",
+        "sourceHandle": "right",
+        "targetHandle": "left",
+        "manualHandles": true,
+        "arrowDirection": "forward",
+        "labelOffset": {
+          "t": 0.5
+        }
+      },
+      "rel-10": {
+        "relationId": "rel-10",
+        "curveType": "straight",
+        "sourceHandle": "bottom",
+        "targetHandle": "right",
+        "manualHandles": true,
+        "arrowDirection": "none",
+        "labelOffset": {
+          "t": 0.5
+        }
+      }
+    },
+    "viewport": {
+      "x": 40,
+      "y": 15,
+      "zoom": 0.9
+    },
+    "layoutSettings": {
+      "algorithm": "novak-backbone",
+      "direction": "TB",
+      "nodeSpacingX": 75,
+      "nodeSpacingY": 110,
+      "layerSpacing": 115,
+      "respectPinnedNodes": true,
+      "freeformCanvas": true
+    },
+    "crossLinkVisibility": "all"
+  },
+  "parseDiagnostics": []
+}

@@ -14,12 +14,13 @@ import {
   RotateCcw,
   RotateCw,
   Search,
+  Shapes,
   Sparkles,
   Table,
   Trash2,
   Workflow,
 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type {
   DiagramMode,
@@ -38,7 +39,9 @@ import {
 import {
   fetchDefaultWorkspaceInput,
   fetchFlowchartWorkspaceInput,
+  fetchFreeformWorkspaceInput,
 } from '../../services/workspaceBridge';
+import { FLOWCHART_SHAPES_CONFIG } from '../canvas/shapeDefinitions';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
 interface TopToolbarProps {
@@ -86,6 +89,7 @@ export function TopToolbar({
   const isFlowchart = currentMode === 'flowchart';
 
   const [newMapMenuOpen, setNewMapMenuOpen] = useState(false);
+  const [shapePaletteOpen, setShapePaletteOpen] = useState(false);
   const [quickLinkOpen, setQuickLinkOpen] = useState(false);
   const [quickSource, setQuickSource] = useState('');
   const [quickPhrase, setQuickPhrase] = useState(
@@ -108,6 +112,17 @@ export function TopToolbar({
       setStatusMessage((prev) => (prev === msg ? null : prev));
     }, 3000);
   };
+
+  useEffect(() => {
+    if (!shapePaletteOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShapePaletteOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [shapePaletteOpen]);
 
   const handleOpenQuickLink = () => {
     if (!quickLinkOpen) {
@@ -379,6 +394,30 @@ export function TopToolbar({
                   </div>
                 </button>
 
+                {/* Opção 3: Novo Canvas Livre (Freeform) */}
+                <button
+                  type="button"
+                  data-testid="menu-new-freeform"
+                  onClick={() => {
+                    createNewEmptyMap(true, 'concept-map', { freeformCanvas: true });
+                    setNewMapMenuOpen(false);
+                    showToast(
+                      'Novo Canvas Livre iniciado com suporte a 7 formas geométricas e conexões livres.'
+                    );
+                  }}
+                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
+                >
+                  <Shapes className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                  <div>
+                    <div className="font-semibold text-slate-900">
+                      Novo Canvas Livre (Freeform)
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      7 formas geométricas e conexões livres entre 4 portas cardeais
+                    </div>
+                  </div>
+                </button>
+
                 <div className="my-1.5 h-px bg-slate-100" />
                 <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                   Exemplos Prontos do Workspace
@@ -430,6 +469,33 @@ export function TopToolbar({
                     </div>
                     <div className="text-[10px] text-slate-500">
                       Fluxograma rico com 7 formas geométricas e desvios
+                    </div>
+                  </div>
+                </button>
+
+                {/* Opção 5: Carregar exemplo-canvas-livre.cmap.json */}
+                <button
+                  type="button"
+                  data-testid="menu-load-freeform-example"
+                  onClick={() => {
+                    setNewMapMenuOpen(false);
+                    fetchFreeformWorkspaceInput().then((p) => {
+                      const doc = parseAndValidateJsonDocument(p.content);
+                      loadFromDocument(doc);
+                      showToast(
+                        'exemplo-canvas-livre.cmap.json (Canvas Livre) carregado.'
+                      );
+                    });
+                  }}
+                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
+                >
+                  <Shapes className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                  <div>
+                    <div className="font-semibold text-slate-900">
+                      Carregar exemplo-canvas-livre
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      Canvas livre com 7 formas, 4 portas manuais e 4 direções de seta
                     </div>
                   </div>
                 </button>
@@ -527,6 +593,84 @@ export function TopToolbar({
             + Conceito
           </button>
         )}
+
+        {/* Feature F15: Paleta Rápida de Formas (+ Forma ▾) */}
+        <div className="relative">
+          <button
+            type="button"
+            data-testid="toolbar-shape-palette-btn"
+            onClick={() => {
+              setShapePaletteOpen((v) => !v);
+              setNewMapMenuOpen(false);
+              setQuickLinkOpen(false);
+              setExportMenuOpen(false);
+            }}
+            className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-semibold whitespace-nowrap shadow-xs transition ${
+              shapePaletteOpen
+                ? 'border-indigo-400 bg-indigo-100 text-indigo-900'
+                : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+            title="Inserir qualquer uma das 7 formas geométricas diretamente no canvas"
+          >
+            <Shapes className="h-3.5 w-3.5 text-slate-600" />
+            <span>+ Forma ▾</span>
+          </button>
+
+          {shapePaletteOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setShapePaletteOpen(false)}
+              />
+              <div
+                data-testid="toolbar-shape-palette-popover"
+                className="absolute left-0 z-50 mt-1.5 w-72 rounded-xl border border-slate-200 bg-white p-2.5 text-xs shadow-xl"
+              >
+                <div className="mb-2 flex items-center justify-between border-b border-slate-100 px-1 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  <span>Inserir Forma no Canvas</span>
+                  <span className="font-normal text-[9px] text-slate-400">
+                    7 formas disponíveis
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {FLOWCHART_SHAPES_CONFIG.map((opt) => (
+                    <button
+                      key={opt.shape}
+                      type="button"
+                      data-testid={`toolbar-add-shape-${opt.shape}`}
+                      onClick={() => {
+                        addConcept('Novo Bloco', undefined, opt.shape);
+                        setShapePaletteOpen(false);
+                        showToast(
+                          `Novo bloco "${opt.label}" adicionado ao canvas.`
+                        );
+                      }}
+                      className={`group flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-1.5 text-left transition hover:border-indigo-400 hover:bg-indigo-50/70 hover:shadow-xs ${
+                        opt.shape === 'concept' ? 'col-span-2' : ''
+                      }`}
+                      title={`Adicionar ${opt.label} (${opt.sublabel})`}
+                    >
+                      <div
+                        data-testid={`shape-palette-item-${opt.shape}`}
+                        className="shrink-0 text-slate-500 transition-colors group-hover:text-indigo-600"
+                      >
+                        {opt.renderIcon(false)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] font-semibold text-slate-800 group-hover:text-indigo-950">
+                          {opt.label}
+                        </div>
+                        <div className="truncate text-[9px] text-slate-400 group-hover:text-indigo-600">
+                          {opt.sublabel}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Popover de Criação Rápida de Conexão / Transição */}
         <div className="relative">
@@ -794,12 +938,18 @@ export function TopToolbar({
           <span className="hidden md:inline">Importar</span>
         </button>
 
-        {/* Botão Recarregar Exemplo do Workspace (Sensível ao Modo) */}
+        {/* Botão Recarregar Exemplo do Workspace (Sensível à Modalidade) */}
         <button
           type="button"
           data-testid="toolbar-reload-example-btn"
           onClick={() => {
-            if (isFlowchart) {
+            if (visual.layoutSettings.freeformCanvas) {
+              fetchFreeformWorkspaceInput().then((p) => {
+                const doc = parseAndValidateJsonDocument(p.content);
+                loadFromDocument(doc);
+                showToast('exemplo-canvas-livre.cmap.json carregado do workspace.');
+              });
+            } else if (isFlowchart) {
               fetchFlowchartWorkspaceInput().then((p) => {
                 loadFromMarkdown(p.content, p.fileName);
                 showToast('exemplo-fluxograma.md carregado do workspace.');
@@ -813,9 +963,11 @@ export function TopToolbar({
           }}
           className="rounded-lg border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-50 transition"
           title={
-            isFlowchart
-              ? 'Recarregar exemplo-fluxograma.md do disco'
-              : 'Recarregar exemplo.md do disco'
+            visual.layoutSettings.freeformCanvas
+              ? 'Recarregar exemplo-canvas-livre.cmap.json do disco'
+              : isFlowchart
+                ? 'Recarregar exemplo-fluxograma.md do disco'
+                : 'Recarregar exemplo.md do disco'
           }
         >
           <RefreshCw className="h-3.5 w-3.5" />

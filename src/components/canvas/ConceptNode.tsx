@@ -5,7 +5,7 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react';
-import { GitBranchPlus, GitFork, Pencil, Pin } from 'lucide-react';
+import { ChevronDown, GitBranchPlus, GitFork, Pencil, Pin, Shapes } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type {
   ConceptId,
@@ -14,6 +14,7 @@ import type {
   NodeVisualStyle,
 } from '../../domain/types';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
+import { FLOWCHART_SHAPES_CONFIG } from './shapeDefinitions';
 
 export interface ConceptNodeData extends Record<string, unknown> {
   conceptId: ConceptId;
@@ -40,6 +41,7 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
   const toggleNodePin = useConceptMapStore((s) => s.toggleNodePin);
   const resizeNode = useConceptMapStore((s) => s.resizeNode);
   const setHoveredNodeId = useConceptMapStore((s) => s.setHoveredNodeId);
+  const updateNodeShape = useConceptMapStore((s) => s.updateNodeShape);
 
   // Store fallbacks for reactive synchronization
   const storeDiagramMode = useConceptMapStore((s) => s.semantic.diagramMode);
@@ -58,7 +60,46 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
 
   const [isEditing, setIsEditing] = useState(false);
   const [draftLabel, setDraftLabel] = useState(data.label);
+  const [isShapeMenuOpen, setIsShapeMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const shapeMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-dismiss shape popover if node loses selection
+  useEffect(() => {
+    if (!selected) {
+      setIsShapeMenuOpen(false);
+    }
+  }, [selected]);
+
+  // Handle click outside and Escape key to close shape popover
+  useEffect(() => {
+    if (!isShapeMenuOpen) return;
+
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      if (
+        shapeMenuRef.current &&
+        !shapeMenuRef.current.contains(e.target as globalThis.Node)
+      ) {
+        setIsShapeMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsShapeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isShapeMenuOpen]);
 
   useEffect(() => {
     setDraftLabel(data.label);
@@ -89,7 +130,12 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
     backgroundColor: effectiveShape === 'decision' ? '#d97706' : '#2563eb',
   };
 
-  const handleVisibilityClass = `transition-all duration-150 hover:scale-125 ${
+  const handleRingColor =
+    effectiveShape === 'decision'
+      ? 'hover:ring-amber-300/80'
+      : 'hover:ring-blue-300/80';
+
+  const handleClasses = `transition-all duration-150 hover:scale-125 hover:ring-4 ${handleRingColor} before:absolute before:-inset-2 before:content-[''] before:rounded-full ${
     selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
   }`;
 
@@ -344,6 +390,84 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
           className="nodrag absolute -top-10 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] shadow-lg"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Universal Shape Switcher Button & Popover */}
+          <div className="relative" ref={shapeMenuRef}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsShapeMenuOpen((prev) => !prev);
+              }}
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium transition-colors ${
+                isShapeMenuOpen
+                  ? 'bg-blue-100 text-blue-800'
+                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+              title="Trocar formato do bloco (qualquer uma das 7 formas geométricas)"
+            >
+              <Shapes className="h-3.5 w-3.5 text-slate-600" />
+              <span>Forma</span>
+              <ChevronDown className="h-3 w-3 text-slate-400" />
+            </button>
+
+            {/* Shape Switcher Popover */}
+            {isShapeMenuOpen && (
+              <div
+                className="nodrag absolute left-0 top-full mt-1.5 z-40 w-64 whitespace-normal rounded-xl border border-slate-200 bg-white p-2 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-1.5 flex items-center justify-between border-b border-slate-100 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  <span>Trocar Formato</span>
+                  <span className="font-mono text-[9px] lowercase text-slate-400">
+                    {effectiveShape}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {FLOWCHART_SHAPES_CONFIG.map((opt) => {
+                    const isCurrent = effectiveShape === opt.shape;
+                    return (
+                      <button
+                        key={opt.shape}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateNodeShape(data.conceptId, opt.shape);
+                          setIsShapeMenuOpen(false);
+                        }}
+                        className={`flex items-center gap-1.5 rounded-lg border p-1.5 text-left transition ${
+                          opt.shape === 'concept' ? 'col-span-2' : ''
+                        } ${
+                          isCurrent
+                            ? 'border-blue-600 bg-blue-50 text-blue-950 font-semibold ring-1 ring-blue-500 shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                        }`}
+                        title={`${opt.label} — ${opt.sublabel}`}
+                      >
+                        <div
+                          className={`shrink-0 ${
+                            isCurrent ? 'text-blue-600' : 'text-slate-400'
+                          }`}
+                        >
+                          {opt.renderIcon(isCurrent)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[10px] font-medium leading-tight">
+                            {opt.label}
+                          </div>
+                          <div className="truncate text-[8px] text-slate-400">
+                            {opt.sublabel}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <span className="h-3.5 w-px bg-slate-200" />
+
           {diagramMode === 'flowchart' ? (
             <>
               {effectiveShape === 'decision' ? (
@@ -558,65 +682,34 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
         )}
       </div>
 
-      {/* React Flow Handles at 4 Cardinal Directions */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="top"
-        style={handleStyle}
-        className={handleVisibilityClass}
-      />
+      {/* 4 Unified React Flow Handles in ConnectionMode.Loose */}
       <Handle
         type="source"
         position={Position.Top}
         id="top"
         style={handleStyle}
-        className={handleVisibilityClass}
-      />
-
-      <Handle
-        type="target"
-        position={Position.Right}
-        id="right"
-        style={handleStyle}
-        className={handleVisibilityClass}
+        className={handleClasses}
       />
       <Handle
         type="source"
         position={Position.Right}
         id="right"
         style={handleStyle}
-        className={handleVisibilityClass}
-      />
-
-      <Handle
-        type="target"
-        position={Position.Bottom}
-        id="bottom"
-        style={handleStyle}
-        className={handleVisibilityClass}
+        className={handleClasses}
       />
       <Handle
         type="source"
         position={Position.Bottom}
         id="bottom"
         style={handleStyle}
-        className={handleVisibilityClass}
-      />
-
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        style={handleStyle}
-        className={handleVisibilityClass}
+        className={handleClasses}
       />
       <Handle
         type="source"
         position={Position.Left}
         id="left"
         style={handleStyle}
-        className={handleVisibilityClass}
+        className={handleClasses}
       />
     </div>
   );
