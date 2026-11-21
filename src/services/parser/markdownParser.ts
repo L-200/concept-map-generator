@@ -78,16 +78,32 @@ export function splitMarkdownTableRow(line: string): string[] {
 
   const cells: string[] = [];
   let current = '';
+  let parenDepth = 0;
 
   for (let i = 0; i < withoutOuterPipes.length; i++) {
     const ch = withoutOuterPipes[i];
     if (ch === '\\' && i + 1 < withoutOuterPipes.length && withoutOuterPipes[i + 1] === '|') {
       current += '|';
       i++; // Pula o pipe escapado
+    } else if (
+      ch === '|' &&
+      i + 1 < withoutOuterPipes.length &&
+      withoutOuterPipes[i + 1] === '|' &&
+      (parenDepth > 0 ||
+        (i > 0 &&
+          withoutOuterPipes[i - 1] === ' ' &&
+          i + 2 < withoutOuterPipes.length &&
+          withoutOuterPipes[i + 2] === ' '))
+    ) {
+      current += '||';
+      i++; // Preserva operador lógico/HTA '||' dentro da célula
     } else if (ch === '|') {
       cells.push(current.trim());
       current = '';
+      parenDepth = 0;
     } else {
+      if (ch === '(') parenDepth++;
+      else if (ch === ')' && parenDepth > 0) parenDepth--;
       current += ch;
     }
   }
@@ -96,6 +112,8 @@ export function splitMarkdownTableRow(line: string): string[] {
   return cells;
 }
 
+const TABLE_SEP_REGEX = /^\|?(\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?$/;
+
 /**
  * Verifica se uma linha é um separador de tabela Markdown (ex: `|---|---|---|` ou `|:---:|---:|`).
  */
@@ -103,6 +121,9 @@ export function isTableSeparatorLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.includes('|') || !trimmed.includes('-')) {
     return false;
+  }
+  if (TABLE_SEP_REGEX.test(trimmed)) {
+    return true;
   }
   const cells = splitMarkdownTableRow(trimmed);
   return (
@@ -140,6 +161,20 @@ export interface FrontmatterResult {
   contentWithoutFrontmatter: string;
   frontmatterMode?: DiagramMode;
   frontmatterTitle?: string;
+  frontmatterTreeLayout?: 'vertical' | 'horizontal';
+}
+
+export function normalizeTreeLayoutString(raw: string): 'vertical' | 'horizontal' | null {
+  const clean = stripAccents(raw.toLowerCase())
+    .trim()
+    .replace(/[_\s]+/g, '-');
+  if (['vertical', 'compact', 'compacto', 'colunas', 'columns', 'empilhado', 'stacked', 'tb-vertical'].includes(clean)) {
+    return 'vertical';
+  }
+  if (['horizontal', 'wide', 'largo', 'standard', 'padrao', 'default', 'tb-horizontal'].includes(clean)) {
+    return 'horizontal';
+  }
+  return null;
 }
 
 /**
@@ -161,6 +196,7 @@ export function extractFrontmatter(content: string): FrontmatterResult {
 
   let frontmatterMode: DiagramMode | undefined;
   let frontmatterTitle: string | undefined;
+  let frontmatterTreeLayout: 'vertical' | 'horizontal' | undefined;
 
   const lines = frontmatterBody.split(/\r?\n/);
   for (const line of lines) {
@@ -183,12 +219,22 @@ export function extractFrontmatter(content: string): FrontmatterResult {
     if (titleMatch && !frontmatterTitle) {
       frontmatterTitle = titleMatch[1].trim();
     }
+
+    // Detecta treeLayout, tree-layout, layoutStyle, layout-style, estilo, folhas
+    const treeLayoutMatch = trimmedLine.match(
+      /^(?:treeLayout|tree-layout|tree_layout|layoutStyle|layout-style|layout_style|estilo|folhas)\s*:\s*["']?([^"'\r\n#]+)["']?/i
+    );
+    if (treeLayoutMatch && !frontmatterTreeLayout) {
+      const parsed = normalizeTreeLayoutString(treeLayoutMatch[1]);
+      if (parsed) frontmatterTreeLayout = parsed;
+    }
   }
 
   return {
     contentWithoutFrontmatter,
     frontmatterMode,
     frontmatterTitle,
+    frontmatterTreeLayout,
   };
 }
 
@@ -196,25 +242,10 @@ export function extractFrontmatter(content: string): FrontmatterResult {
  * Detecta diretivas de modo via comentários HTML ou anotações @type / Tipo de Diagrama.
  */
 export function detectDirectiveMode(content: string): DiagramMode | null {
-  // 1. Comentário HTML: <!-- type: flowchart --> ou <!-- tipo: fluxograma -->
-  const commentMatch = content.match(
-    /<!--\s*(?:type|tipo|diagram|mode|modo|tipo\s+de\s+diagrama)\s*[:=]\s*([a-zA-Z0-9_-]+)\s*-->/i
+  const match = content.match(
+    /(?:<!--\s*(?:type|tipo|diagram|mode|modo|tipo\s+de\s+diagrama)\s*[:=]\s*([a-zA-Z0-9_-]+)\s*-->|(?:@(?:type|tipo|diagram|mode|modo)|(?:tipo\s+de\s+diagrama))\s*[:=]\s*([a-zA-Z0-9_-]+))/i
   );
-  if (commentMatch) {
-    const parsed = normalizeDiagramModeString(commentMatch[1]);
-    if (parsed) return parsed;
-  }
-
-  // 2. Diretivas de texto: @type: flowchart ou Tipo de Diagrama: Fluxograma
-  const directiveMatch = content.match(
-    /(?:@(?:type|tipo|diagram|mode|modo)|(?:tipo\s+de\s+diagrama))\s*[:=]\s*([a-zA-Z0-9_-]+)/i
-  );
-  if (directiveMatch) {
-    const parsed = normalizeDiagramModeString(directiveMatch[1]);
-    if (parsed) return parsed;
-  }
-
-  return null;
+  return match ? normalizeDiagramModeString(match[1] || match[2]) : null;
 }
 
 /**
@@ -236,38 +267,13 @@ export function detectHeuristicMode(tableLines: { raw: string }[]): DiagramMode 
       c.includes('conceito 2')
   );
 
-  const hasOrigem = normalizedHeader.some(
-    (c) => c === 'origem' || c.startsWith('origem ') || c === 'source' || c.endsWith(' origem')
-  );
-  const hasDestino = normalizedHeader.some(
-    (c) => c === 'destino' || c.startsWith('destino ') || c === 'target' || c.endsWith(' destino')
-  );
-  const hasFlowTerm = normalizedHeader.some(
-    (c) =>
-      c === 'transicao' ||
-      c === 'condicao' ||
-      c === 'forma' ||
-      c === 'shape' ||
-      c === 'tipo de no' ||
-      c === 'tipo do no' ||
-      c === 'transicao / condicao' ||
-      c === 'tipo / forma' ||
-      c.includes('transicao') ||
-      c.includes('condicao') ||
-      c.includes('forma') ||
-      c.includes('tipo de no')
+  const hasOrigem = normalizedHeader.some((c) => /\b(origem|source)\b|^origem\s|\sorigem$/.test(c));
+  const hasDestino = normalizedHeader.some((c) => /\b(destino|target)\b|^destino\s|\sdestino$/.test(c));
+  const hasFlowTerm = normalizedHeader.some((c) =>
+    /(transicao|condicao|forma|shape|tipo d[eo] no)/.test(c)
   );
 
-  if (
-    !hasConceitoHeader &&
-    ((hasOrigem && hasDestino) ||
-      (hasFlowTerm &&
-        (hasOrigem ||
-          hasDestino ||
-          normalizedHeader.some(
-            (c) => c.includes('forma') || c.includes('transicao') || c.includes('condicao')
-          ))))
-  ) {
+  if (!hasConceitoHeader && ((hasOrigem && hasDestino) || hasFlowTerm)) {
     return 'flowchart';
   }
 
@@ -288,6 +294,45 @@ export function detectHeuristicMode(tableLines: { raw: string }[]): DiagramMode 
   return 'concept-map';
 }
 
+const STATIC_SHAPE_MAP: Record<string, FlowchartNodeShape> = {
+  inicio: 'terminal',
+  fim: 'terminal',
+  start: 'terminal',
+  end: 'terminal',
+  terminal: 'terminal',
+  termino: 'terminal',
+  parada: 'terminal',
+  stop: 'terminal',
+  processo: 'process',
+  process: 'process',
+  etapa: 'process',
+  acao: 'process',
+  tarefa: 'process',
+  atividade: 'process',
+  step: 'process',
+  task: 'process',
+  action: 'process',
+  decisao: 'decision',
+  decision: 'decision',
+  desvio: 'decision',
+  teste: 'decision',
+  escolha: 'decision',
+  io: 'io',
+  'i/o': 'io',
+  'e/s': 'io',
+  es: 'io',
+  dados: 'io',
+  data: 'io',
+  concept: 'concept',
+  conceito: 'concept',
+};
+
+const SHAPE_SUBSTRING_RULES: [RegExp, FlowchartNodeShape][] = [
+  [/entrada|saida|input|output/, 'io'],
+  [/sub|rotina|routine|procedimento/, 'subroutine'],
+  [/document|relatorio|report|comprovante|certidao/, 'document'],
+];
+
 /**
  * Mapeia tokens textuais de formato de nó para o FlowchartNodeShape canônico.
  */
@@ -296,79 +341,12 @@ export function normalizeNodeShapeString(raw: string): FlowchartNodeShape | null
     .trim()
     .replace(/[^a-z0-9/_-]/g, '');
 
-  if (
-    clean === 'inicio' ||
-    clean === 'fim' ||
-    clean === 'start' ||
-    clean === 'end' ||
-    clean === 'terminal' ||
-    clean === 'termino' ||
-    clean === 'parada' ||
-    clean === 'stop'
-  ) {
-    return 'terminal';
+  if (STATIC_SHAPE_MAP[clean]) {
+    return STATIC_SHAPE_MAP[clean];
   }
 
-  if (
-    clean === 'processo' ||
-    clean === 'process' ||
-    clean === 'etapa' ||
-    clean === 'acao' ||
-    clean === 'tarefa' ||
-    clean === 'atividade' ||
-    clean === 'step' ||
-    clean === 'task' ||
-    clean === 'action'
-  ) {
-    return 'process';
-  }
-
-  if (
-    clean === 'decisao' ||
-    clean === 'decision' ||
-    clean === 'desvio' ||
-    clean === 'teste' ||
-    clean === 'escolha'
-  ) {
-    return 'decision';
-  }
-
-  if (
-    clean === 'io' ||
-    clean === 'i/o' ||
-    clean === 'e/s' ||
-    clean === 'es' ||
-    clean.includes('entrada') ||
-    clean.includes('saida') ||
-    clean.includes('input') ||
-    clean.includes('output') ||
-    clean === 'dados' ||
-    clean === 'data'
-  ) {
-    return 'io';
-  }
-
-  if (
-    clean.includes('sub') ||
-    clean.includes('rotina') ||
-    clean.includes('routine') ||
-    clean.includes('procedimento')
-  ) {
-    return 'subroutine';
-  }
-
-  if (
-    clean.includes('document') ||
-    clean.includes('relatorio') ||
-    clean.includes('report') ||
-    clean.includes('comprovante') ||
-    clean.includes('certidao')
-  ) {
-    return 'document';
-  }
-
-  if (clean === 'concept' || clean === 'conceito') {
-    return 'concept';
+  for (const [pattern, shape] of SHAPE_SUBSTRING_RULES) {
+    if (pattern.test(clean)) return shape;
   }
 
   return null;
@@ -380,97 +358,65 @@ export interface ExtractedShapeResult {
   rawShapeTag?: string;
 }
 
+const TAG_PATTERN =
+  '(?:in[ií]cio|fim|terminal|start|end|t[eé]rmino|decis[aã]o|decision|condi[cç][aã]o|processo|process|etapa|a[cç][aã]o|tarefa|entrada(?:/|\\s*e\\s*)sa[ií]da|io|i/o|e/s|input(?:/output)?|output|subprocesso|subrotina|subroutine|documento|document|relat[oó]rio)';
+
+const EXACT_TAG_REGEX = new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i');
+const PREFIX_TAG_REGEX = new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))\\s*[-:]?\\s*(.+)$`, 'i');
+const SUFFIX_TAG_REGEX = new RegExp(`^(.*?)\\s*(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i');
+
 /**
  * Extrai tags de forma declaradas inline nos rótulos de nós (prefixo, sufixo ou delimitadores).
  */
+const MERMAID_DELIMITERS: [RegExp, FlowchartNodeShape, string][] = [
+  [/^\[\[([\s\S]+)\]\]$/, 'subroutine', '[[...]]'],
+  [/^\{([\s\S]+)\}$/, 'decision', '{...}'],
+  [/^\(\[([\s\S]+)\]\)$/, 'terminal', '([...])'],
+  [/^(?:\[\/|\[\\)([\s\S]+?)(?:\/\]|\\\])$/, 'io', '[/.../]'],
+];
+
 export function extractShapeFromLabel(rawLabel: string): ExtractedShapeResult {
   const trimmed = rawLabel.trim();
-  if (!trimmed) {
-    return { cleanLabel: '' };
+  if (!trimmed) return { cleanLabel: '' };
+
+  for (const [regex, shape, rawShapeTag] of MERMAID_DELIMITERS) {
+    const match = trimmed.match(regex);
+    if (match) {
+      return { cleanLabel: cleanDisplayText(match[1]), shape, rawShapeTag };
+    }
   }
 
-  // 1. Sintaxes de delimitador estilo Mermaid:
-  // Subprocesso: [[Texto]]
-  const subroutineMatch = trimmed.match(/^\[\[([\s\S]+)\]\]$/);
-  if (subroutineMatch) {
+  const exact = trimmed.match(EXACT_TAG_REGEX);
+  if (exact) {
     return {
-      cleanLabel: cleanDisplayText(subroutineMatch[1]),
-      shape: 'subroutine',
-      rawShapeTag: '[[...]]',
+      cleanLabel: cleanDisplayText(exact[1]),
+      shape: normalizeNodeShapeString(exact[1]) ?? undefined,
+      rawShapeTag: exact[0],
     };
   }
 
-  // Decisão: {Texto} ou {Texto?}
-  const decisionMatch = trimmed.match(/^\{([\s\S]+)\}$/);
-  if (decisionMatch) {
+  const prefix = trimmed.match(PREFIX_TAG_REGEX);
+  if (prefix) {
     return {
-      cleanLabel: cleanDisplayText(decisionMatch[1]),
-      shape: 'decision',
-      rawShapeTag: '{...}',
+      cleanLabel: cleanDisplayText(prefix[2]),
+      shape: normalizeNodeShapeString(prefix[1]) ?? undefined,
+      rawShapeTag: prefix[1],
     };
   }
 
-  // Terminal: ([Texto])
-  const stadiumMatch = trimmed.match(/^\(\[([\s\S]+)\]\)$/);
-  if (stadiumMatch) {
+  const suffix = trimmed.match(SUFFIX_TAG_REGEX);
+  if (suffix && suffix[1].trim()) {
     return {
-      cleanLabel: cleanDisplayText(stadiumMatch[1]),
-      shape: 'terminal',
-      rawShapeTag: '([...])',
+      cleanLabel: cleanDisplayText(suffix[1]),
+      shape: normalizeNodeShapeString(suffix[2]) ?? undefined,
+      rawShapeTag: suffix[2],
     };
   }
 
-  // Entrada/Saída: [/Texto/] ou [\Texto\]
-  const ioMermaidMatch = trimmed.match(/^(?:\[\/|\[\\)([\s\S]+?)(?:\/\]|\\\])$/);
-  if (ioMermaidMatch) {
-    return {
-      cleanLabel: cleanDisplayText(ioMermaidMatch[1]),
-      shape: 'io',
-      rawShapeTag: '[/.../]',
-    };
-  }
-
-  // 2. Tags entre colchetes ou parênteses:
-  const TAG_PATTERN =
-    '(?:in[ií]cio|fim|terminal|start|end|t[eé]rmino|decis[aã]o|decision|condi[cç][aã]o|processo|process|etapa|a[cç][aã]o|tarefa|entrada(?:/|\\s*e\\s*)sa[ií]da|io|i/o|e/s|input(?:/output)?|output|subprocesso|subrotina|subroutine|documento|document|relat[oó]rio)';
-
-  // Standalone tag exata: [Início], (Início), [Decisão], [Fim]
-  const exactMatch = trimmed.match(new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i'));
-  if (exactMatch) {
-    const shape = normalizeNodeShapeString(exactMatch[1]);
-    return {
-      cleanLabel: cleanDisplayText(exactMatch[1]),
-      shape: shape ?? undefined,
-      rawShapeTag: exactMatch[0],
-    };
-  }
-
-  // Tag prefixada: [Início] Protocolar Pedido ou (Início) Protocolar Pedido
-  const prefixMatch = trimmed.match(new RegExp(`^(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))\\s*[-:]?\\s*(.+)$`, 'i'));
-  if (prefixMatch) {
-    const shape = normalizeNodeShapeString(prefixMatch[1]);
-    return {
-      cleanLabel: cleanDisplayText(prefixMatch[2]),
-      shape: shape ?? undefined,
-      rawShapeTag: prefixMatch[1],
-    };
-  }
-
-  // Tag sufixada: Protocolar Pedido [Início] ou Protocolar Pedido (Início)
-  const suffixMatch = trimmed.match(new RegExp(`^(.*?)\\s*(?:\\[|\\()(${TAG_PATTERN})(?:\\]|\\))$`, 'i'));
-  if (suffixMatch && suffixMatch[1].trim()) {
-    const shape = normalizeNodeShapeString(suffixMatch[2]);
-    return {
-      cleanLabel: cleanDisplayText(suffixMatch[1]),
-      shape: shape ?? undefined,
-      rawShapeTag: suffixMatch[2],
-    };
-  }
-
-  return {
-    cleanLabel: cleanDisplayText(trimmed),
-  };
+  return { cleanLabel: cleanDisplayText(trimmed) };
 }
+
+const INDEX_COL_NAMES = new Set(['#', 'id', 'no', 'num', 'nº', 'numero', 'indice', 'index', 'ordem', 'item']);
 
 /**
  * Detecta se as células pertencem a um cabeçalho de tabela e mapeia os índices das colunas.
@@ -489,68 +435,17 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
   let shapeCol: number | undefined;
 
   normalizedCells.forEach((colName, idx) => {
-    if (
-      indexCol === undefined &&
-      ['#', 'id', 'no', 'num', 'nº', 'numero', 'indice', 'index', 'ordem', 'item'].includes(colName)
-    ) {
+    if (indexCol === undefined && INDEX_COL_NAMES.has(colName)) {
       indexCol = idx;
-    } else if (
-      sourceCol === -1 &&
-      (colName.includes('conceito a') ||
-        colName.includes('conceito 1') ||
-        colName.includes('origem') ||
-        colName === 'source' ||
-        colName === 'de' ||
-        colName.includes('etapa anterior') ||
-        colName === 'sujeito')
-    ) {
+    } else if (sourceCol === -1 && /(conceito\s*[a1]|origem|source|^de$|etapa anterior|^sujeito$)/.test(colName)) {
       sourceCol = idx;
-    } else if (
-      phraseCol === -1 &&
-      (colName.includes('frase') ||
-        colName.includes('ligacao') ||
-        colName.includes('transicao') ||
-        colName.includes('condicao') ||
-        colName.includes('rotulo') ||
-        colName.includes('acao') ||
-        colName.includes('verbo') ||
-        colName.includes('predicado') ||
-        colName === 'label' ||
-        colName === 'linking phrase' ||
-        colName === 'transition' ||
-        colName === 'condition')
-    ) {
+    } else if (phraseCol === -1 && /(label|linking phrase|transition|condition|frase|ligacao|transicao|condicao|rotulo|acao|verbo|predicado)/.test(colName)) {
       phraseCol = idx;
-    } else if (
-      targetCol === -1 &&
-      (colName.includes('conceito b') ||
-        colName.includes('conceito 2') ||
-        colName.includes('destino') ||
-        colName === 'target' ||
-        colName === 'para' ||
-        colName.includes('proxima etapa') ||
-        colName.includes('etapa seguinte') ||
-        colName === 'objeto')
-    ) {
+    } else if (targetCol === -1 && /(conceito\s*[b2]|destino|target|^para$|proxima etapa|etapa seguinte|^objeto$)/.test(colName)) {
       targetCol = idx;
-    } else if (
-      shapeCol === undefined &&
-      (colName.includes('forma') ||
-        colName.includes('shape') ||
-        colName.includes('tipo de no') ||
-        colName.includes('tipo do no') ||
-        colName.includes('geometria'))
-    ) {
+    } else if (shapeCol === undefined && /(forma|shape|tipo d[eo] no|geometria)/.test(colName)) {
       shapeCol = idx;
-    } else if (
-      typeCol === undefined &&
-      (colName.includes('tipo') ||
-        colName.includes('natureza') ||
-        colName.includes('categoria') ||
-        colName === 'type' ||
-        colName === 'kind' ||
-        colName.includes('classificacao'))
-    ) {
+    } else if (typeCol === undefined && /(type|kind|tipo|natureza|categoria|classificacao)/.test(colName)) {
       typeCol = idx;
     }
   });
@@ -588,66 +483,26 @@ function detectHeaderMapping(cells: string[]): ColumnMapping | null {
  * Cria mapeamento posicional de colunas quando a tabela não possui cabeçalho explícito.
  */
 function inferPositionalMapping(cells: string[]): ColumnMapping {
-  // Caso 6 colunas com índice: # | Origem | Frase | Destino | Tipo | Forma
-  if (cells.length >= 6 && /^\d+$/.test(cells[0].trim())) {
-    return {
-      indexCol: 0,
-      sourceCol: 1,
-      phraseCol: 2,
-      targetCol: 3,
-      typeCol: 4,
-      shapeCol: 5,
-      expectedMinCols: 6,
-    };
-  }
-
-  // Caso 5+ colunas onde a primeira coluna é um índice numérico (padrão entrada.md / exemplo.md)
-  if (cells.length >= 5 && /^\d+$/.test(cells[0].trim())) {
-    return {
-      indexCol: 0,
-      sourceCol: 1,
-      phraseCol: 2,
-      targetCol: 3,
-      typeCol: 4,
-      expectedMinCols: 5,
-    };
-  }
-
-  // Caso 5 colunas sem índice numérico: Origem | Frase | Destino | Tipo | Forma
-  if (cells.length >= 5) {
-    return {
-      sourceCol: 0,
-      phraseCol: 1,
-      targetCol: 2,
-      typeCol: 3,
-      shapeCol: 4,
-      expectedMinCols: 5,
-    };
-  }
-
-  // Caso 4 colunas (padrão exemplo: Conceito A | Frase | Conceito B | Tipo)
-  if (cells.length >= 4) {
-    return {
-      sourceCol: 0,
-      phraseCol: 1,
-      targetCol: 2,
-      typeCol: 3,
-      expectedMinCols: 4,
-    };
-  }
-
-  // Caso 3 colunas (sem coluna Tipo)
+  const hasIndex = cells.length >= 5 && /^\d+$/.test(cells[0].trim());
+  const offset = hasIndex ? 1 : 0;
   return {
-    sourceCol: 0,
-    phraseCol: 1,
-    targetCol: 2,
-    expectedMinCols: 3,
+    indexCol: hasIndex ? 0 : undefined,
+    sourceCol: offset,
+    phraseCol: offset + 1,
+    targetCol: offset + 2,
+    typeCol: cells.length > offset + 3 ? offset + 3 : undefined,
+    shapeCol: cells.length > offset + 4 ? offset + 4 : undefined,
+    expectedMinCols: hasIndex ? (cells.length >= 6 ? 6 : 5) : Math.min(Math.max(cells.length, 3), 5),
   };
 }
 
 /**
  * Classifica o tipo e subtipo da relação/transição a partir do texto bruto da célula e contexto.
  */
+const FLOW_CONDITIONAL_PHRASES = new Set([
+  'sim', 'nao', 'yes', 'no', 'true', 'false', 'aprovado', 'reprovado', 'valido', 'invalido',
+]);
+
 export function parseRelationType(
   rawType: string,
   diagramMode: DiagramMode = 'concept-map',
@@ -661,72 +516,35 @@ export function parseRelationType(
   const cleaned = stripAccents(rawType.toLowerCase()).trim();
   const phraseClean = stripAccents(linkingPhrase.toLowerCase()).trim();
 
-  // Em modo fluxograma:
   if (diagramMode === 'flowchart') {
-    // 1. Condicional explícita na coluna Tipo
-    if (cleaned.includes('condi') || cleaned.includes('branch') || cleaned.includes('desvio')) {
+    if (/(condi|branch|desvio)/.test(cleaned)) {
       return { type: 'conditional', flowKind: 'conditional', isDefaulted: false, isUnknown: false };
     }
-
-    // 2. Retorno / Loop na coluna Tipo
-    if (
-      cleaned.includes('loop') ||
-      cleaned.includes('retorn') ||
-      cleaned.includes('volta') ||
-      cleaned.includes('reprocess')
-    ) {
+    if (/(loop|retorn|volta|reprocess)/.test(cleaned)) {
       return { type: 'loop-back', flowKind: 'loop-back', isDefaulted: false, isUnknown: false };
     }
-
-    // 3. Sequencial explícita na coluna Tipo
-    if (cleaned.includes('seq') || cleaned.includes('fluxo') || cleaned.includes('operac')) {
+    if (/(seq|fluxo|operac)/.test(cleaned)) {
       return { type: 'sequence', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
     }
-
-    // 4. Frase de ligação indicativa de condicional (ex: Sim, Não, True, False, Aprovado, Reprovado)
-    if (
-      ['sim', 'nao', 'yes', 'no', 'true', 'false', 'aprovado', 'reprovado', 'valido', 'invalido'].includes(phraseClean) ||
-      phraseClean.endsWith('?')
-    ) {
+    if (FLOW_CONDITIONAL_PHRASES.has(phraseClean) || phraseClean.endsWith('?')) {
       return { type: 'conditional', flowKind: 'conditional', isDefaulted: false, isUnknown: false };
     }
-
-    // 5. Cruzada ou Hierárquica em fluxograma (se declarada expressamente)
-    if (cleaned.includes('cruzad') || cleaned.includes('cross')) {
+    if (/(cruzad|cross)/.test(cleaned)) {
       return { type: 'cross-link', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
     }
     if (cleaned.includes('hier')) {
       return { type: 'hierarchical', flowKind: 'sequence', isDefaulted: false, isUnknown: false };
     }
-
-    // 6. Se o campo de tipo estiver vazio ou contiver apenas formas (ex: início -> processo)
-    // Em fluxograma, o padrão canônico é 'sequence' sem ser tratado como erro desconhecido
     return { type: 'sequence', flowKind: 'sequence', isDefaulted: !cleaned, isUnknown: false };
   }
 
-  // Em modo mapa conceitual padrão (Novak):
-  if (!cleaned) {
-    return { type: 'hierarchical', isDefaulted: true, isUnknown: false };
-  }
-
-  if (
-    cleaned.includes('cruzad') ||
-    cleaned.includes('cross') ||
-    cleaned.includes('transvers') ||
-    cleaned.includes('associat')
-  ) {
+  if (!cleaned) return { type: 'hierarchical', isDefaulted: true, isUnknown: false };
+  if (/(cruzad|cross|transvers|associat)/.test(cleaned)) {
     return { type: 'cross-link', isDefaulted: false, isUnknown: false };
   }
-
-  if (
-    cleaned.includes('hier') ||
-    cleaned.includes('subord') ||
-    cleaned.includes('arvore') ||
-    cleaned.includes('estrutur')
-  ) {
+  if (/(hier|subord|arvore|estrutur)/.test(cleaned)) {
     return { type: 'hierarchical', isDefaulted: false, isUnknown: false };
   }
-
   return { type: 'hierarchical', isDefaulted: false, isUnknown: true };
 }
 
@@ -775,25 +593,17 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
     adjUndirected[rel.sourceId].add(rel.targetId);
     adjUndirected[rel.targetId].add(rel.sourceId);
 
-    if (rel.type === 'hierarchical') {
-      hierarchicalCount++;
-      outDegreeHier[rel.sourceId]++;
-      inDegreeHier[rel.targetId]++;
-      adjHier[rel.sourceId].push(rel.targetId);
-    } else if (rel.type === 'cross-link') {
+    if (rel.type === 'cross-link') {
       crossLinkCount++;
-    } else if (rel.type === 'sequence') {
-      sequenceCount++;
-      outDegreeHier[rel.sourceId]++;
-      inDegreeHier[rel.targetId]++;
-      adjHier[rel.sourceId].push(rel.targetId);
-    } else if (rel.type === 'conditional') {
-      conditionalCount++;
-      outDegreeHier[rel.sourceId]++;
-      inDegreeHier[rel.targetId]++;
-      adjHier[rel.sourceId].push(rel.targetId);
     } else if (rel.type === 'loop-back') {
       loopBackCount++;
+    } else {
+      if (rel.type === 'hierarchical') hierarchicalCount++;
+      else if (rel.type === 'sequence') sequenceCount++;
+      else if (rel.type === 'conditional') conditionalCount++;
+      outDegreeHier[rel.sourceId]++;
+      inDegreeHier[rel.targetId]++;
+      adjHier[rel.sourceId].push(rel.targetId);
     }
   }
 
@@ -808,8 +618,9 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
     const queue: ConceptId[] = [conceptIds[0]];
     visited.add(conceptIds[0]);
 
-    while (queue.length > 0) {
-      const curr = queue.shift()!;
+    let head = 0;
+    while (head < queue.length) {
+      const curr = queue[head++];
       for (const neighbor of adjUndirected[curr]) {
         if (!visited.has(neighbor)) {
           visited.add(neighbor);
@@ -848,17 +659,18 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
 
   // Cálculo de profundidade hierárquica (BFS a partir das raízes hierárquicas)
   const hierarchicalDepthById: Record<ConceptId, number> = {};
-  const queue: ConceptId[] = [];
+  const depthQueue: ConceptId[] = [];
 
   for (const rootId of rootConceptIds) {
     hierarchicalDepthById[rootId] = 0;
-    queue.push(rootId);
+    depthQueue.push(rootId);
   }
 
   // Usa um guarda de limite de profundidade para ser seguro mesmo se houver ciclos
   const maxDepth = Math.max(totalConcepts, 1);
-  while (queue.length > 0) {
-    const u = queue.shift()!;
+  let depthHead = 0;
+  while (depthHead < depthQueue.length) {
+    const u = depthQueue[depthHead++];
     const currentDepth = hierarchicalDepthById[u] ?? 0;
     if (currentDepth >= maxDepth) continue;
 
@@ -868,7 +680,7 @@ export function computeSemanticGraphMetrics(semantic: SemanticModel): SemanticGr
         hierarchicalDepthById[v] < currentDepth + 1
       ) {
         hierarchicalDepthById[v] = currentDepth + 1;
-        queue.push(v);
+        depthQueue.push(v);
       }
     }
   }
@@ -909,8 +721,12 @@ export function parseConceptMapMarkdown(
   const defaultTitle = options.defaultTitle ?? 'Mapa Conceitual';
 
   // 1. Extração do Frontmatter YAML (Tier 1)
-  const { contentWithoutFrontmatter, frontmatterMode, frontmatterTitle } =
-    extractFrontmatter(markdownContent ?? '');
+  const {
+    contentWithoutFrontmatter,
+    frontmatterMode,
+    frontmatterTitle,
+    frontmatterTreeLayout,
+  } = extractFrontmatter(markdownContent ?? '');
 
   const effectiveMarkdown = contentWithoutFrontmatter;
 
@@ -926,28 +742,33 @@ export function parseConceptMapMarkdown(
   const relationOrder: RelationId[] = [];
   const seenRelationSignatures = new Set<string>();
 
+  const makeEmptyResult = (mode: DiagramMode, title: string): ParseResult => {
+    const semantic: SemanticModel = {
+      diagramMode: mode,
+      title,
+      concepts: {},
+      conceptOrder: [],
+      relations: {},
+      relationOrder: [],
+    };
+    return {
+      semantic,
+      metrics: computeSemanticGraphMetrics(semantic),
+      diagnostics,
+      detectedColumnCount: 5,
+    };
+  };
+
   if (!effectiveMarkdown || effectiveMarkdown.trim().length === 0) {
     diagnostics.push({
       severity: 'warning',
       code: 'EMPTY_FILE',
       message: 'O arquivo Markdown está vazio.',
     });
-
-    const emptySemantic: SemanticModel = {
-      diagramMode: frontmatterMode ?? directiveMode ?? options.diagramMode ?? 'concept-map',
-      title: frontmatterTitle ?? defaultTitle,
-      concepts: {},
-      conceptOrder: [],
-      relations: {},
-      relationOrder: [],
-    };
-
-    return {
-      semantic: emptySemantic,
-      metrics: computeSemanticGraphMetrics(emptySemantic),
-      diagnostics,
-      detectedColumnCount: 5,
-    };
+    return makeEmptyResult(
+      frontmatterMode ?? directiveMode ?? options.diagramMode ?? 'concept-map',
+      frontmatterTitle ?? defaultTitle
+    );
   }
 
   const lines = effectiveMarkdown.replace(/\r\n/g, '\n').split('\n');
@@ -971,7 +792,7 @@ export function parseConceptMapMarkdown(
       continue;
     }
 
-    if (trimmed.includes('|')) {
+    if (trimmed.includes('|') && !/^[-*+#]\s/.test(trimmed)) {
       tableLines.push({ lineNumber: i + 1, raw });
     }
   }
@@ -995,22 +816,7 @@ export function parseConceptMapMarkdown(
       code: 'NO_TABLE_FOUND',
       message: 'Nenhuma tabela Markdown foi encontrada no arquivo.',
     });
-
-    const emptySemantic: SemanticModel = {
-      diagramMode: detectedMode,
-      title: extractedTitle ?? defaultTitle,
-      concepts: {},
-      conceptOrder: [],
-      relations: {},
-      relationOrder: [],
-    };
-
-    return {
-      semantic: emptySemantic,
-      metrics: computeSemanticGraphMetrics(emptySemantic),
-      diagnostics,
-      detectedColumnCount: 5,
-    };
+    return makeEmptyResult(detectedMode, extractedTitle ?? defaultTitle);
   }
 
   // Helper de registro de nó garantindo deduplicação e preservação de formas
@@ -1208,19 +1014,9 @@ export function parseConceptMapMarkdown(
         targetColShape = normalizeNodeShapeString(parts[1]) ?? undefined;
       } else if (parts.length === 1 && parts[0]) {
         const cleanedShape = stripAccents(parts[0].toLowerCase()).trim();
-        const isRelationTypeWord =
-          cleanedShape.includes('condi') ||
-          cleanedShape.includes('retorn') ||
-          cleanedShape.includes('loop') ||
-          cleanedShape.includes('seq') ||
-          cleanedShape.includes('hier') ||
-          cleanedShape.includes('cruzad');
-
-        if (!isRelationTypeWord) {
+        if (!/(condi|retorn|loop|seq|hier|cruzad)/.test(cleanedShape)) {
           const single = normalizeNodeShapeString(parts[0]);
-          if (single) {
-            targetColShape = single;
-          }
+          if (single) targetColShape = single;
         }
       }
     }
@@ -1304,6 +1100,7 @@ export function parseConceptMapMarkdown(
 
   const semantic: SemanticModel = {
     diagramMode: detectedMode,
+    treeLayout: frontmatterTreeLayout,
     title: extractedTitle ?? defaultTitle,
     concepts,
     conceptOrder,

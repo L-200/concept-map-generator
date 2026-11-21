@@ -1,20 +1,29 @@
 import {
   Handle,
   NodeResizer,
-  Position,
   type Node,
   type NodeProps,
 } from '@xyflow/react';
 import { ChevronDown, GitBranchPlus, GitFork, Pencil, Pin, Shapes } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import type {
   ConceptId,
   DiagramMode,
   FlowchartNodeShape,
   NodeVisualStyle,
 } from '../../domain/types';
+import { toFlowPosition } from '../../services/layout/geometry';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 import { FLOWCHART_SHAPES_CONFIG } from './shapeDefinitions';
+
+const SVG_SHAPE_DEFS: Record<
+  'decision' | 'io' | 'document',
+  { points?: string; d?: string; selFill: string; defFill: string; selStroke: string; defStroke: string }
+> = {
+  decision: { points: '50,0 100,50 50,100 0,50', selFill: '#fffbeb', defFill: '#ffffff', selStroke: '#d97706', defStroke: '#d97706' },
+  io: { points: '14,0 100,0 86,100 0,100', selFill: '#f0f9ff', defFill: '#f8fafc', selStroke: '#0284c7', defStroke: '#38bdf8' },
+  document: { d: 'M 0,0 L 100,0 L 100,88 Q 75,100 50,88 Q 25,76 0,88 Z', selFill: '#fffbeb', defFill: '#ffffff', selStroke: '#d97706', defStroke: '#f59e0b' },
+};
 
 export interface ConceptNodeData extends Record<string, unknown> {
   conceptId: ConceptId;
@@ -32,7 +41,44 @@ export interface ConceptNodeData extends Record<string, unknown> {
 
 export type ConceptFlowNode = Node<ConceptNodeData, 'concept'>;
 
-export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
+const FLOWCHART_QUICK_ACTIONS: Array<{
+  label: string;
+  shape: FlowchartNodeShape;
+  text: string;
+  title: string;
+  cls: string;
+}> = [
+  {
+    label: 'Nova Etapa',
+    shape: 'process',
+    text: '+ Processo',
+    title: 'Adicionar etapa operacional (Processo)',
+    cls: 'font-semibold text-blue-700 hover:bg-blue-50',
+  },
+  {
+    label: 'Decisão?',
+    shape: 'decision',
+    text: '+ Decisão',
+    title: 'Adicionar ponto de decisão condicional (Losango)',
+    cls: 'font-medium text-amber-700 hover:bg-amber-50',
+  },
+  {
+    label: 'Entrada/Saída',
+    shape: 'io',
+    text: '+ Entrada/Saída',
+    title: 'Adicionar entrada/saída de dados (Paralelogramo)',
+    cls: 'font-medium text-sky-700 hover:bg-sky-50',
+  },
+  {
+    label: 'Fim',
+    shape: 'terminal',
+    text: '+ Fim',
+    title: 'Adicionar término de fluxo (Fim)',
+    cls: 'font-medium text-rose-700 hover:bg-rose-50',
+  },
+];
+
+function ConceptNodeComponent({ data, selected }: NodeProps<ConceptFlowNode>) {
   const updateConceptLabel = useConceptMapStore((s) => s.updateConceptLabel);
   const addConnectedConcept = useConceptMapStore((s) => s.addConnectedConcept);
   const createDecisionBranches = useConceptMapStore(
@@ -156,100 +202,36 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
   // RENDER SHAPE BACKGROUND & BORDER
   // --------------------------------------------------------------------------
   const renderShapeBackground = () => {
-    switch (effectiveShape) {
-      case 'decision': {
-        const fill = customBg || (selected ? '#fffbeb' : '#ffffff');
-        const stroke =
-          customBorder ||
-          (selected
-            ? '#d97706'
-            : data.isSearchMatch
-              ? '#f59e0b'
-              : '#d97706');
-        return (
-          <svg
-            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible drop-shadow-sm"
-            preserveAspectRatio="none"
-            viewBox="0 0 100 100"
-          >
-            <polygon
-              points="50,0 100,50 50,100 0,50"
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={data.isSearchMatch ? 3 : selected ? 2.5 : 1.75}
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        );
-      }
-
-      case 'io': {
-        const fill = customBg || (selected ? '#f0f9ff' : '#f8fafc');
-        const stroke =
-          customBorder ||
-          (selected
-            ? '#0284c7'
-            : data.isSearchMatch
-              ? '#f59e0b'
-              : '#38bdf8');
-        return (
-          <svg
-            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible drop-shadow-sm"
-            preserveAspectRatio="none"
-            viewBox="0 0 100 100"
-          >
-            <polygon
-              points="14,0 100,0 86,100 0,100"
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={data.isSearchMatch ? 3 : selected ? 2.5 : 1.75}
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        );
-      }
-
-      case 'document': {
-        const fill = customBg || (selected ? '#fffbeb' : '#ffffff');
-        const stroke =
-          customBorder ||
-          (selected
-            ? '#d97706'
-            : data.isSearchMatch
-              ? '#f59e0b'
-              : '#f59e0b');
-        return (
-          <svg
-            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible drop-shadow-sm"
-            preserveAspectRatio="none"
-            viewBox="0 0 100 100"
-          >
-            <path
-              d="M 0,0 L 100,0 L 100,88 Q 75,100 50,88 Q 25,76 0,88 Z"
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={data.isSearchMatch ? 3 : selected ? 2.5 : 1.75}
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        );
-      }
-
-      case 'subroutine': {
-        return (
-          <>
-            <div className="pointer-events-none absolute left-3 top-0 bottom-0 w-px bg-indigo-200" />
-            <div className="pointer-events-none absolute right-3 top-0 bottom-0 w-px bg-indigo-200" />
-          </>
-        );
-      }
-
-      default:
-        return null;
+    if (effectiveShape === 'subroutine') {
+      return (
+        <>
+          <div className="pointer-events-none absolute left-3 top-0 bottom-0 w-px bg-indigo-200" />
+          <div className="pointer-events-none absolute right-3 top-0 bottom-0 w-px bg-indigo-200" />
+        </>
+      );
     }
+
+    if (effectiveShape in SVG_SHAPE_DEFS) {
+      const def = SVG_SHAPE_DEFS[effectiveShape as keyof typeof SVG_SHAPE_DEFS];
+      const strokeWidth = data.isSearchMatch ? 3 : selected ? 2.5 : 1.75;
+      const fill = customBg || (selected ? def.selFill : def.defFill);
+      const stroke = customBorder || (selected ? def.selStroke : data.isSearchMatch ? '#f59e0b' : def.defStroke);
+      return (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full overflow-visible drop-shadow-sm"
+          preserveAspectRatio="none"
+          viewBox="0 0 100 100"
+        >
+          {def.points ? (
+            <polygon points={def.points} fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          ) : (
+            <path d={def.d} fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          )}
+        </svg>
+      );
+    }
+
+    return null;
   };
 
   // --------------------------------------------------------------------------
@@ -258,75 +240,42 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
   const getContainerClassName = () => {
     const base =
       'group relative flex h-full w-full flex-col items-center justify-center text-center transition-all duration-150';
+    const dimCls = data.isDimmed ? 'opacity-25' : 'opacity-100';
 
     if (
       effectiveShape === 'decision' ||
       effectiveShape === 'io' ||
       effectiveShape === 'document'
     ) {
-      // Shapes with full SVG background have transparent HTML borders
       return `${base} bg-transparent ${
         selected ? 'filter drop-shadow-md' : 'hover:drop-shadow-md'
-      } ${data.isDimmed ? 'opacity-25' : 'opacity-100'}`;
+      } ${dimCls}`;
     }
+
+    const matchCls = data.isSearchMatch ? 'ring-4 ring-amber-400 border-amber-500' : '';
+    let shapeCls = 'min-h-[46px] min-w-[130px] rounded-xl border px-3.5 py-2.5 shadow-sm';
+    let colorCls = data.isRoot && !customBg
+      ? 'border-blue-600 border-t-4 bg-blue-50/95 font-bold text-slate-900'
+      : !customBg ? 'border-slate-300 bg-white font-semibold text-slate-800' : 'font-semibold';
+    let selCls = selected ? 'ring-2 ring-blue-500 border-blue-500 shadow-md' : 'hover:border-blue-400 hover:shadow-md';
 
     if (effectiveShape === 'terminal') {
-      const colorCls = customBg
-        ? ''
-        : isStart
-          ? 'border-emerald-500 bg-emerald-50/95 text-emerald-950 font-bold'
-          : isEnd
-            ? 'border-rose-400 bg-rose-50/95 text-rose-950 font-semibold'
-            : 'border-slate-300 bg-white font-semibold text-slate-800';
-      return `${base} rounded-full border-2 px-6 py-2.5 shadow-sm ${colorCls} ${
-        selected
-          ? 'ring-2 ring-emerald-500 border-emerald-500 shadow-md'
-          : 'hover:border-emerald-400 hover:shadow-md'
-      } ${data.isSearchMatch ? 'ring-4 ring-amber-400 border-amber-500' : ''} ${
-        data.isDimmed ? 'opacity-25' : 'opacity-100'
-      }`;
+      shapeCls = 'rounded-full border-2 px-6 py-2.5 shadow-sm';
+      colorCls = customBg ? '' : isStart
+        ? 'border-emerald-500 bg-emerald-50/95 text-emerald-950 font-bold'
+        : isEnd ? 'border-rose-400 bg-rose-50/95 text-rose-950 font-semibold' : 'border-slate-300 bg-white font-semibold text-slate-800';
+      selCls = selected ? 'ring-2 ring-emerald-500 border-emerald-500 shadow-md' : 'hover:border-emerald-400 hover:shadow-md';
+    } else if (effectiveShape === 'subroutine') {
+      shapeCls = 'rounded-md border-2 px-5 py-2.5 shadow-sm';
+      colorCls = customBg ? '' : 'border-indigo-400 bg-white text-slate-900 font-semibold';
+      selCls = selected ? 'ring-2 ring-indigo-500 border-indigo-500 shadow-md' : 'hover:border-indigo-400 hover:shadow-md';
+    } else if (effectiveShape === 'process') {
+      shapeCls = 'rounded-lg border px-3.5 py-2.5 shadow-sm';
+      colorCls = customBg ? '' : 'border-slate-400 bg-white text-slate-800 font-semibold';
+      selCls = selected ? 'ring-2 ring-blue-500 border-blue-500 shadow-md' : 'hover:border-blue-400 hover:shadow-md';
     }
 
-    if (effectiveShape === 'subroutine') {
-      const colorCls = customBg
-        ? ''
-        : 'border-indigo-400 bg-white text-slate-900 font-semibold';
-      return `${base} rounded-md border-2 px-5 py-2.5 shadow-sm ${colorCls} ${
-        selected
-          ? 'ring-2 ring-indigo-500 border-indigo-500 shadow-md'
-          : 'hover:border-indigo-400 hover:shadow-md'
-      } ${data.isSearchMatch ? 'ring-4 ring-amber-400 border-amber-500' : ''} ${
-        data.isDimmed ? 'opacity-25' : 'opacity-100'
-      }`;
-    }
-
-    if (effectiveShape === 'process') {
-      const colorCls = customBg
-        ? ''
-        : 'border-slate-400 bg-white text-slate-800 font-semibold';
-      return `${base} rounded-lg border px-3.5 py-2.5 shadow-sm ${colorCls} ${
-        selected
-          ? 'ring-2 ring-blue-500 border-blue-500 shadow-md'
-          : 'hover:border-blue-400 hover:shadow-md'
-      } ${data.isSearchMatch ? 'ring-4 ring-amber-400 border-amber-500' : ''} ${
-        data.isDimmed ? 'opacity-25' : 'opacity-100'
-      }`;
-    }
-
-    // Default 'concept' (Novak mode)
-    return `${base} min-h-[46px] min-w-[130px] rounded-xl border px-3.5 py-2.5 shadow-sm ${
-      data.isRoot && !customBg
-        ? 'border-blue-600 border-t-4 bg-blue-50/95 font-bold text-slate-900'
-        : !customBg
-          ? 'border-slate-300 bg-white font-semibold text-slate-800'
-          : 'font-semibold'
-    } ${
-      selected
-        ? 'ring-2 ring-blue-500 border-blue-500 shadow-md'
-        : 'hover:border-blue-400 hover:shadow-md'
-    } ${data.isSearchMatch ? 'ring-4 ring-amber-400 border-amber-500' : ''} ${
-      data.isDimmed ? 'opacity-25' : 'opacity-100'
-    }`;
+    return `${base} ${shapeCls} ${colorCls} ${selCls} ${matchCls} ${dimCls}`;
   };
 
   // Inner label container constraints
@@ -505,80 +454,27 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
                   </button>
                 </>
               ) : (
-                <>
+                FLOWCHART_QUICK_ACTIONS.map((action) => (
                   <button
+                    key={action.shape}
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       addConnectedConcept(
                         data.conceptId,
-                        'Nova Etapa',
+                        action.label,
                         '',
                         'sequence',
                         undefined,
-                        'process'
+                        action.shape
                       );
                     }}
-                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-semibold text-blue-700 hover:bg-blue-50"
-                    title="Adicionar etapa operacional (Processo)"
+                    className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 ${action.cls}`}
+                    title={action.title}
                   >
-                    + Processo
+                    {action.text}
                   </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      addConnectedConcept(
-                        data.conceptId,
-                        'Decisão?',
-                        '',
-                        'sequence',
-                        undefined,
-                        'decision'
-                      );
-                    }}
-                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-amber-700 hover:bg-amber-50"
-                    title="Adicionar ponto de decisão condicional (Losango)"
-                  >
-                    + Decisão
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      addConnectedConcept(
-                        data.conceptId,
-                        'Entrada/Saída',
-                        '',
-                        'sequence',
-                        undefined,
-                        'io'
-                      );
-                    }}
-                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-sky-700 hover:bg-sky-50"
-                    title="Adicionar entrada/saída de dados (Paralelogramo)"
-                  >
-                    + Entrada/Saída
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      addConnectedConcept(
-                        data.conceptId,
-                        'Fim',
-                        '',
-                        'sequence',
-                        undefined,
-                        'terminal'
-                      );
-                    }}
-                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-rose-700 hover:bg-rose-50"
-                    title="Adicionar término de fluxo (Fim)"
-                  >
-                    + Fim
-                  </button>
-                </>
+                ))
               )}
               <span className="h-3.5 w-px bg-slate-200" />
               <button
@@ -683,35 +579,52 @@ export function ConceptNode({ data, selected }: NodeProps<ConceptFlowNode>) {
       </div>
 
       {/* 4 Unified React Flow Handles in ConnectionMode.Loose */}
-      <Handle
-        type="source"
-        position={Position.Top}
-        id="top"
-        style={handleStyle}
-        className={handleClasses}
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        style={handleStyle}
-        className={handleClasses}
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="bottom"
-        style={handleStyle}
-        className={handleClasses}
-      />
-      <Handle
-        type="source"
-        position={Position.Left}
-        id="left"
-        style={handleStyle}
-        className={handleClasses}
-      />
+      {(['top', 'right', 'bottom', 'left'] as const).map((pos) => (
+        <Handle
+          key={pos}
+          type="source"
+          position={toFlowPosition(pos)}
+          id={pos}
+          style={handleStyle}
+          className={handleClasses}
+        />
+      ))}
     </div>
   );
 }
+
+function areNodePropsEqual(
+  prev: NodeProps<ConceptFlowNode>,
+  next: NodeProps<ConceptFlowNode>
+): boolean {
+  if (
+    prev.id !== next.id ||
+    prev.selected !== next.selected ||
+    prev.dragging !== next.dragging ||
+    prev.zIndex !== next.zIndex ||
+    prev.width !== next.width ||
+    prev.height !== next.height
+  ) {
+    return false;
+  }
+  if (prev.data === next.data) return true;
+  const pd = prev.data;
+  const nd = next.data;
+  if (!pd || !nd) return pd === nd;
+  return (
+    pd.conceptId === nd.conceptId &&
+    pd.label === nd.label &&
+    pd.pinned === nd.pinned &&
+    pd.computedLayer === nd.computedLayer &&
+    pd.isRoot === nd.isRoot &&
+    pd.degree === nd.degree &&
+    pd.isDimmed === nd.isDimmed &&
+    pd.isSearchMatch === nd.isSearchMatch &&
+    pd.nodeShape === nd.nodeShape &&
+    pd.diagramMode === nd.diagramMode &&
+    pd.customStyle === nd.customStyle
+  );
+}
+
+export const ConceptNode = memo(ConceptNodeComponent, areNodePropsEqual);
 

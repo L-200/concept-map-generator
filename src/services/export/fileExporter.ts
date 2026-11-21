@@ -2,7 +2,6 @@ import {
   getBezierPath,
   getSmoothStepPath,
   getStraightPath,
-  Position,
 } from '@xyflow/react';
 import type {
   ArrowDirection,
@@ -25,6 +24,13 @@ import type {
 import { computeSmartEdgeHandles } from '../layout/layoutEngine';
 import { estimateEdgeLabelDimensions } from '../layout/nodeSizing';
 import { serializeSemanticModelToMarkdown } from '../parser/markdownSerializer';
+import {
+  getHandlePoint,
+  toFlowPosition,
+  classifyCondition,
+  getDiamondPointsString,
+  computeParallelOffset,
+} from '../layout/geometry';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
 /**
@@ -62,46 +68,6 @@ function wrapTextLines(text: string, maxCharsPerLine: number): string[] {
   return lines;
 }
 
-/**
- * Calcula as coordenadas exatas do ponto de ancoragem (handle) na borda de um nó.
- */
-function getHandlePoint(
-  position: Point2D,
-  width: number,
-  height: number,
-  handle: HandlePosition | undefined
-): Point2D {
-  switch (handle) {
-    case 'top':
-      return { x: position.x + width / 2, y: position.y };
-    case 'right':
-      return { x: position.x + width, y: position.y + height / 2 };
-    case 'left':
-      return { x: position.x, y: position.y + height / 2 };
-    case 'bottom':
-    default:
-      return { x: position.x + width / 2, y: position.y + height };
-  }
-}
-
-function toFlowPosition(
-  handle: HandlePosition | undefined,
-  isSource: boolean
-): Position {
-  switch (handle) {
-    case 'top':
-      return Position.Top;
-    case 'right':
-      return Position.Right;
-    case 'left':
-      return Position.Left;
-    case 'bottom':
-      return Position.Bottom;
-    default:
-      return isSource ? Position.Bottom : Position.Top;
-  }
-}
-
 interface PreparedEdgeLabel {
   relId: string;
   phrase: string;
@@ -129,76 +95,49 @@ export function renderNodeShapeSvg(
   border: string,
   strokeW: number
 ): string {
+  const attrs = `fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}"`;
+  const fx = x.toFixed(1);
+  const fy = y.toFixed(1);
+
   switch (shape) {
     case 'terminal': {
-      const rx = (h / 2).toFixed(1);
-      const ry = (h / 2).toFixed(1);
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="${rx}" ry="${ry}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+      const r = (h / 2).toFixed(1);
+      return `<rect x="${fx}" y="${fy}" width="${w}" height="${h}" rx="${r}" ry="${r}" ${attrs} />`;
     }
-
-    case 'process': {
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="6" ry="6" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
-    }
-
-    case 'decision': {
-      const topX = (x + w / 2).toFixed(1);
-      const topY = y.toFixed(1);
-      const rightX = (x + w).toFixed(1);
-      const rightY = (y + h / 2).toFixed(1);
-      const bottomX = (x + w / 2).toFixed(1);
-      const bottomY = (y + h).toFixed(1);
-      const leftX = x.toFixed(1);
-      const leftY = (y + h / 2).toFixed(1);
-      const points = `${topX},${topY} ${rightX},${rightY} ${bottomX},${bottomY} ${leftX},${leftY}`;
-      return `<polygon points="${points}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
-    }
-
+    case 'process':
+      return `<rect x="${fx}" y="${fy}" width="${w}" height="${h}" rx="6" ry="6" ${attrs} />`;
+    case 'decision':
+      return `<polygon points="${getDiamondPointsString(x, y, w, h)}" ${attrs} />`;
     case 'io': {
       const skew = Math.min(24, Math.max(14, Math.round(w * 0.12)));
-      const p1 = `${(x + skew).toFixed(1)},${y.toFixed(1)}`;
-      const p2 = `${(x + w).toFixed(1)},${y.toFixed(1)}`;
-      const p3 = `${(x + w - skew).toFixed(1)},${(y + h).toFixed(1)}`;
-      const p4 = `${x.toFixed(1)},${(y + h).toFixed(1)}`;
-      const points = `${p1} ${p2} ${p3} ${p4}`;
-      return `<polygon points="${points}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+      const pts = `${(x + skew).toFixed(1)},${fy} ${(x + w).toFixed(1)},${fy} ${(x + w - skew).toFixed(1)},${(y + h).toFixed(1)} ${fx},${(y + h).toFixed(1)}`;
+      return `<polygon points="${pts}" ${attrs} />`;
     }
-
     case 'subroutine': {
-      const barInset = 12;
-      const x1 = (x + barInset).toFixed(1);
-      const x2 = (x + w - barInset).toFixed(1);
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="6" ry="6" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
-      <line x1="${x1}" y1="${y.toFixed(1)}" x2="${x1}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
-      <line x1="${x2}" y1="${y.toFixed(1)}" x2="${x2}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+      const x1 = (x + 12).toFixed(1);
+      const x2 = (x + w - 12).toFixed(1);
+      return `<rect x="${fx}" y="${fy}" width="${w}" height="${h}" rx="6" ry="6" ${attrs} />
+      <line x1="${x1}" y1="${fy}" x2="${x1}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />
+      <line x1="${x2}" y1="${fy}" x2="${x2}" y2="${(y + h).toFixed(1)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
     }
-
     case 'document': {
-      const wave = 10;
-      const pTopLeft = `${x.toFixed(1)} ${y.toFixed(1)}`;
-      const pTopRight = `${(x + w).toFixed(1)} ${y.toFixed(1)}`;
-      const pRightBottom = `${(x + w).toFixed(1)} ${(y + h - wave).toFixed(1)}`;
-      const cp1X = (x + w * 0.75).toFixed(1);
-      const cp1Y = (y + h + wave * 0.8).toFixed(1);
-      const cp2X = (x + w * 0.6).toFixed(1);
-      const cp2Y = (y + h + wave * 0.8).toFixed(1);
-      const midX = (x + w * 0.5).toFixed(1);
-      const midY = (y + h - wave * 0.2).toFixed(1);
-      const cp3X = (x + w * 0.4).toFixed(1);
-      const cp3Y = (y + h - wave * 1.5).toFixed(1);
-      const cp4X = (x + w * 0.25).toFixed(1);
-      const cp4Y = (y + h - wave * 1.5).toFixed(1);
-      const pLeftBottom = `${x.toFixed(1)} ${(y + h - wave).toFixed(1)}`;
-
-      const d = `M ${pTopLeft} L ${pTopRight} L ${pRightBottom} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${midX} ${midY} C ${cp3X} ${cp3Y}, ${cp4X} ${cp4Y}, ${pLeftBottom} Z`;
-      return `<path d="${d}" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
+      const d = `M ${fx} ${fy} L ${(x + w).toFixed(1)} ${fy} L ${(x + w).toFixed(1)} ${(y + h - 10).toFixed(1)} C ${(x + w * 0.75).toFixed(1)} ${(y + h + 8).toFixed(1)}, ${(x + w * 0.6).toFixed(1)} ${(y + h + 8).toFixed(1)}, ${(x + w * 0.5).toFixed(1)} ${(y + h - 2).toFixed(1)} C ${(x + w * 0.4).toFixed(1)} ${(y + h - 15).toFixed(1)}, ${(x + w * 0.25).toFixed(1)} ${(y + h - 15).toFixed(1)}, ${fx} ${(y + h - 10).toFixed(1)} Z`;
+      return `<path d="${d}" ${attrs} />`;
     }
-
     case 'concept':
-    default: {
-      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" rx="12" fill="${escapeXml(bg)}" stroke="${escapeXml(border)}" stroke-width="${strokeW}" />`;
-    }
+    default:
+      return `<rect x="${fx}" y="${fy}" width="${w}" height="${h}" rx="12" ${attrs} />`;
   }
 }
+
+const EDGE_LABEL_PALETTES = {
+  affirmative: { bg: '#f0fdf4', border: '#22c55e', text: '#15803d', fontWeight: '600' },
+  negative: { bg: '#fef2f2', border: '#ef4444', text: '#b91c1c', fontWeight: '600' },
+  conditional: { bg: '#fefce8', border: '#eab308', text: '#854d0e', fontWeight: '600' },
+  'loop-back': { bg: '#f8fafc', border: '#94a3b8', text: '#334155', fontWeight: '500' },
+  cross: { bg: '#fffbeb', border: '#f59e0b', text: '#92400e', fontWeight: '500' },
+  default: { bg: '#ffffff', border: '#cbd5e1', text: '#1e293b', fontWeight: '500' },
+};
 
 /**
  * Retorna paleta de cores para pílulas de aresta em SVG exportado.
@@ -209,73 +148,16 @@ function getEdgeLabelPalette(
   isFlowchart: boolean
 ): { bg: string; border: string; text: string; fontWeight: string } {
   if (!isFlowchart) {
-    const isCross = relType === 'cross-link';
-    return {
-      bg: isCross ? '#fffbeb' : '#ffffff',
-      border: isCross ? '#f59e0b' : '#cbd5e1',
-      text: isCross ? '#92400e' : '#1e293b',
-      fontWeight: '500',
-    };
+    return relType === 'cross-link' ? EDGE_LABEL_PALETTES.cross : EDGE_LABEL_PALETTES.default;
   }
 
-  const norm = phrase.trim().toLowerCase();
-  const isYes =
-    norm === 'sim' ||
-    norm === 'yes' ||
-    norm === 'true' ||
-    norm === 's' ||
-    norm === 'v';
+  const cond = classifyCondition(phrase);
+  if (cond === 'affirmative') return EDGE_LABEL_PALETTES.affirmative;
+  if (cond === 'negative') return EDGE_LABEL_PALETTES.negative;
+  if (relType === 'conditional') return EDGE_LABEL_PALETTES.conditional;
+  if (relType === 'loop-back') return EDGE_LABEL_PALETTES['loop-back'];
 
-  const isNo =
-    norm === 'não' ||
-    norm === 'nao' ||
-    norm === 'no' ||
-    norm === 'false' ||
-    norm === 'n' ||
-    norm === 'f';
-
-  if (isYes) {
-    return {
-      bg: '#f0fdf4',
-      border: '#22c55e',
-      text: '#15803d',
-      fontWeight: '600',
-    };
-  }
-
-  if (isNo) {
-    return {
-      bg: '#fef2f2',
-      border: '#ef4444',
-      text: '#b91c1c',
-      fontWeight: '600',
-    };
-  }
-
-  if (relType === 'conditional') {
-    return {
-      bg: '#fefce8',
-      border: '#eab308',
-      text: '#854d0e',
-      fontWeight: '600',
-    };
-  }
-
-  if (relType === 'loop-back') {
-    return {
-      bg: '#f8fafc',
-      border: '#94a3b8',
-      text: '#334155',
-      fontWeight: '500',
-    };
-  }
-
-  return {
-    bg: '#ffffff',
-    border: '#cbd5e1',
-    text: '#1e293b',
-    fontWeight: '500',
-  };
+  return EDGE_LABEL_PALETTES.default;
 }
 
 /**
@@ -288,6 +170,10 @@ function resolveEdgeLabelOverlaps(labels: PreparedEdgeLabel[]): void {
 
   const padX = 14;
   const padY = 8;
+  const bounds = labels.map((l) => ({
+    halfW: (l.width + padX) / 2,
+    halfH: (l.height + padY) / 2,
+  }));
 
   for (let iter = 0; iter < 20; iter++) {
     let moved = false;
@@ -297,13 +183,8 @@ function resolveEdgeLabelOverlaps(labels: PreparedEdgeLabel[]): void {
         const a = labels[i];
         const b = labels[j];
 
-        const wA = a.width + padX;
-        const hA = a.height + padY;
-        const wB = b.width + padX;
-        const hB = b.height + padY;
-
-        const overlapX = (wA + wB) / 2 - Math.abs(b.lx - a.lx);
-        const overlapY = (hA + hB) / 2 - Math.abs(b.ly - a.ly);
+        const overlapX = bounds[i].halfW + bounds[j].halfW - Math.abs(b.lx - a.lx);
+        const overlapY = bounds[i].halfH + bounds[j].halfH - Math.abs(b.ly - a.ly);
 
         if (overlapX > 0 && overlapY > 0) {
           moved = true;
@@ -335,6 +216,16 @@ function resolveEdgeLabelOverlaps(labels: PreparedEdgeLabel[]): void {
     if (!moved) break;
   }
 }
+
+const SHAPE_PALETTES: Record<string, { bg: string; border: string; text: string; strokeW: number }> = {
+  decision: { bg: '#fffbeb', border: '#d97706', text: '#78350f', strokeW: 2 },
+  io: { bg: '#f0f9ff', border: '#0284c7', text: '#082f49', strokeW: 1.75 },
+  subroutine: { bg: '#ffffff', border: '#6366f1', text: '#1e1b4b', strokeW: 1.75 },
+  document: { bg: '#fffbeb', border: '#d97706', text: '#78350f', strokeW: 1.75 },
+  process: { bg: '#ffffff', border: '#64748b', text: '#1e293b', strokeW: 1.5 },
+  terminal_start: { bg: '#ecfdf5', border: '#10b981', text: '#064e3b', strokeW: 2 },
+  terminal_end: { bg: '#fff1f2', border: '#f43f5e', text: '#881337', strokeW: 2 },
+};
 
 /**
  * Gera um documento SVG vetorial completo, autônomo e independente de resolução
@@ -440,8 +331,7 @@ export function generateStandaloneVectorSvg(
         : `${rel.targetId}--${rel.sourceId}`;
     const siblings = pairCounts[pairKey] ?? [relId];
     const pIdx = Math.max(0, siblings.indexOf(relId));
-    const parallelOffset =
-      siblings.length > 1 ? (pIdx - (siblings.length - 1) / 2) * 34 : 0;
+    const parallelOffset = computeParallelOffset(pIdx, siblings.length);
 
     const isCross = rel.type === 'cross-link';
     const curveType =
@@ -492,59 +382,16 @@ export function generateStandaloneVectorSvg(
     }
 
     const isFlowchart = semantic.diagramMode === 'flowchart';
-    const norm = (rel.linkingPhrase || '').trim().toLowerCase();
-    const isYes =
-      isFlowchart &&
-      (norm === 'sim' ||
-        norm === 'yes' ||
-        norm === 'true' ||
-        norm === 's' ||
-        norm === 'v');
-    const isNo =
-      isFlowchart &&
-      (norm === 'não' ||
-        norm === 'nao' ||
-        norm === 'no' ||
-        norm === 'false' ||
-        norm === 'n' ||
-        norm === 'f');
-
     const isLoop = rel.type === 'loop-back';
+    const cond = isFlowchart ? classifyCondition(rel.linkingPhrase || '') : 'neutral';
+    const edgeKind = isCross ? 'cross' : cond === 'affirmative' ? 'yes' : cond === 'negative' ? 'no' : isLoop ? 'loop' : 'hier';
+    const stroke = edgeKind === 'cross' ? '#d97706' : edgeKind === 'yes' ? '#059669' : edgeKind === 'no' ? '#e11d48' : '#475569';
+    const markerBase = `arrow-${edgeKind}`;
 
-    const stroke = isCross
-      ? '#d97706'
-      : isYes
-        ? '#059669'
-        : isNo
-          ? '#e11d48'
-          : '#475569';
-    const dashAttr =
-      isCross || isLoop ? ' stroke-dasharray="8 5"' : '';
-
-    const markerBase = isCross
-      ? 'arrow-cross'
-      : isYes
-        ? 'arrow-yes'
-        : isNo
-          ? 'arrow-no'
-          : isLoop
-            ? 'arrow-loop'
-            : 'arrow-hier';
-
-    const arrowDirection: ArrowDirection =
-      edgeVis.arrowDirection ?? rel.arrowDirection ?? 'forward';
-
-    const hasStartMarker =
-      arrowDirection === 'reverse' || arrowDirection === 'both';
-    const hasEndMarker =
-      arrowDirection === 'forward' || arrowDirection === 'both';
-
-    const markerStartAttr = hasStartMarker
-      ? ` marker-start="url(#${markerBase})"`
-      : '';
-    const markerEndAttr = hasEndMarker
-      ? ` marker-end="url(#${markerBase})"`
-      : '';
+    const dir: ArrowDirection = edgeVis.arrowDirection ?? rel.arrowDirection ?? 'forward';
+    const markerStartAttr = dir === 'reverse' || dir === 'both' ? ` marker-start="url(#${markerBase})"` : '';
+    const markerEndAttr = dir === 'forward' || dir === 'both' ? ` marker-end="url(#${markerBase})"` : '';
+    const dashAttr = isCross || isLoop ? ' stroke-dasharray="8 5"' : '';
 
     edgePathsSvg.push(
       `    <path id="edge-${escapeXml(rel.id)}" d="${path}" fill="none" stroke="${stroke}" stroke-width="2"${dashAttr}${markerStartAttr}${markerEndAttr} />`
@@ -624,6 +471,13 @@ export function generateStandaloneVectorSvg(
 
   const isFlowchart = semantic.diagramMode === 'flowchart';
   const nodesSvg: string[] = [];
+  let liveNodes: Record<string, any> | undefined;
+  try {
+    liveNodes = useConceptMapStore.getState()?.visual?.nodes;
+  } catch {
+    // useConceptMapStore not available in isolated test environments
+  }
+
   for (const id of conceptIds) {
     const concept = semantic.concepts[id];
     const nodeVis = visual.nodes[id];
@@ -635,77 +489,33 @@ export function generateStandaloneVectorSvg(
     let shape: FlowchartNodeShape =
       nodeVis.nodeShape ??
       concept?.nodeShape ??
+      (liveNodes?.[id]?.nodeShape && liveNodes[id].nodeShape !== 'concept'
+        ? liveNodes[id].nodeShape
+        : undefined) ??
       (isFlowchart ? 'process' : 'concept');
-
-    if (!nodeVis.nodeShape && (!concept?.nodeShape || concept.nodeShape === 'concept')) {
-      try {
-        const live = useConceptMapStore.getState();
-        const liveShape =
-          live.visual?.nodes?.[id]?.nodeShape ??
-          live.semantic?.concepts?.[id]?.nodeShape;
-        if (liveShape && liveShape !== 'concept') {
-          shape = liveShape;
-        }
-      } catch {
-        // useConceptMapStore not available in this environment
-      }
-    }
 
     const isRoot = (nodeVis.computedLayer ?? 1) === 0;
 
-    // Paleta padrão adaptada ao formato do nó se não houver estilo personalizado
-    let defaultBg = isRoot ? '#eff6ff' : '#ffffff';
-    let defaultBorder = isRoot ? '#2563eb' : '#cbd5e1';
-    let defaultText = '#0f172a';
-    let strokeW = isRoot ? 2.5 : 1.5;
+    let style = isRoot
+      ? { bg: '#eff6ff', border: '#2563eb', text: '#0f172a', strokeW: 2.5 }
+      : { bg: '#ffffff', border: '#cbd5e1', text: '#0f172a', strokeW: 1.5 };
 
     if (isFlowchart || shape !== 'concept') {
       if (shape === 'terminal') {
         const isStart =
           /in[ií]cio|start|come[çc]o/i.test(concept.label) || isRoot;
         const isEnd = /fim|end|conclus|termin/i.test(concept.label);
-        if (isStart) {
-          defaultBg = '#ecfdf5';
-          defaultBorder = '#10b981';
-          defaultText = '#064e3b';
-          strokeW = 2;
-        } else if (isEnd) {
-          defaultBg = '#fff1f2';
-          defaultBorder = '#f43f5e';
-          defaultText = '#881337';
-          strokeW = 2;
-        }
-      } else if (shape === 'decision') {
-        defaultBg = '#fffbeb';
-        defaultBorder = '#d97706';
-        defaultText = '#78350f';
-        strokeW = 2;
-      } else if (shape === 'io') {
-        defaultBg = '#f0f9ff';
-        defaultBorder = '#0284c7';
-        defaultText = '#082f49';
-        strokeW = 1.75;
-      } else if (shape === 'subroutine') {
-        defaultBg = '#ffffff';
-        defaultBorder = '#6366f1';
-        defaultText = '#1e1b4b';
-        strokeW = 1.75;
-      } else if (shape === 'document') {
-        defaultBg = '#fffbeb';
-        defaultBorder = '#d97706';
-        defaultText = '#78350f';
-        strokeW = 1.75;
-      } else if (shape === 'process') {
-        defaultBg = '#ffffff';
-        defaultBorder = '#64748b';
-        defaultText = '#1e293b';
-        strokeW = 1.5;
+        if (isStart) style = SHAPE_PALETTES.terminal_start;
+        else if (isEnd) style = SHAPE_PALETTES.terminal_end;
+      } else if (SHAPE_PALETTES[shape]) {
+        style = SHAPE_PALETTES[shape];
       }
     }
 
-    const bg = nodeVis.style?.backgroundColor ?? defaultBg;
-    const border = nodeVis.style?.borderColor ?? defaultBorder;
-    const textColor = nodeVis.style?.textColor ?? defaultText;
+    const bg = nodeVis.style?.backgroundColor ?? style.bg;
+    const border = nodeVis.style?.borderColor ?? style.border;
+    const textColor = nodeVis.style?.textColor ?? style.text;
+    const strokeW = style.strokeW;
 
     // Ajuste de largura útil e quebra de linha de acordo com a geometria da forma
     let usableWidth = w - 24;
@@ -760,39 +570,26 @@ export function generateStandaloneVectorSvg(
     );
   }
 
+const MARKER_CONFIGS: [string, string][] = [
+  ['hier', '#475569'],
+  ['cross', '#d97706'],
+  ['yes', '#059669'],
+  ['no', '#e11d48'],
+  ['loop', '#475569'],
+];
+const SVG_MARKERS_DEF = [false, true]
+  .flatMap((isStart) =>
+    MARKER_CONFIGS.map(
+      ([name, color]) =>
+        `    <marker id="arrow-${name}${isStart ? '-start' : ''}" viewBox="0 0 10 10" refX="${isStart ? 2 : 8}" refY="5" markerWidth="7" markerHeight="7" orient="${isStart ? 'auto' : 'auto-start-reverse'}">\n      <path d="${isStart ? 'M 10 1 L 0 5 L 10 9 z' : 'M 0 1 L 10 5 L 0 9 z'}" fill="${color}" />\n    </marker>`
+    )
+  )
+  .join('\n');
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBoxX} ${viewBoxY} ${viewBoxW} ${viewBoxH}" width="${viewBoxW}" height="${viewBoxH}">
   <defs>
-    <marker id="arrow-hier" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569" />
-    </marker>
-    <marker id="arrow-cross" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#d97706" />
-    </marker>
-    <marker id="arrow-yes" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#059669" />
-    </marker>
-    <marker id="arrow-no" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#e11d48" />
-    </marker>
-    <marker id="arrow-loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 1 L 10 5 L 0 9 z" fill="#475569" />
-    </marker>
-    <marker id="arrow-hier-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 10 1 L 0 5 L 10 9 z" fill="#475569" />
-    </marker>
-    <marker id="arrow-cross-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 10 1 L 0 5 L 10 9 z" fill="#d97706" />
-    </marker>
-    <marker id="arrow-yes-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 10 1 L 0 5 L 10 9 z" fill="#059669" />
-    </marker>
-    <marker id="arrow-no-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 10 1 L 0 5 L 10 9 z" fill="#e11d48" />
-    </marker>
-    <marker id="arrow-loop-start" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 10 1 L 0 5 L 10 9 z" fill="#475569" />
-    </marker>
+${SVG_MARKERS_DEF}
   </defs>
   <rect x="${viewBoxX}" y="${viewBoxY}" width="${viewBoxW}" height="${viewBoxH}" fill="#f8fafc" />
   <g id="edges-layer">
@@ -827,12 +624,21 @@ export async function renderSvgStringToPngBlob(
   svgString: string,
   requestedScale = 2
 ): Promise<Blob> {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(svgString, 'image/svg+xml');
-  const svgEl = doc.documentElement;
-
-  const baseWidth = Number.parseFloat(svgEl.getAttribute('width') || '1200');
-  const baseHeight = Number.parseFloat(svgEl.getAttribute('height') || '800');
+  let baseWidth = 1200;
+  let baseHeight = 800;
+  const dimMatch = /width="([0-9.]+)"\s+height="([0-9.]+)"/.exec(svgString);
+  if (dimMatch) {
+    baseWidth = Number.parseFloat(dimMatch[1]);
+    baseHeight = Number.parseFloat(dimMatch[2]);
+  } else {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(svgString, 'image/svg+xml');
+      const svgEl = doc.documentElement;
+      baseWidth = Number.parseFloat(svgEl.getAttribute('width') || '1200');
+      baseHeight = Number.parseFloat(svgEl.getAttribute('height') || '800');
+    } catch {}
+  }
 
   // Limite seguro de textura em navegadores Linux (12288px)
   const maxCanvasDim = 12288;
@@ -986,37 +792,23 @@ export function parseAndValidateJsonDocument(
     ])
   );
 
+  const valSet = <T>(val: unknown, set: ReadonlySet<string>, fallback: T): T =>
+    typeof val === 'string' && set.has(val) ? (val as T) : fallback;
+  const numOr = (val: unknown, fallback: number): number =>
+    typeof val === 'number' && Number.isFinite(val) ? val : fallback;
+  const finiteNum = (val: unknown): number | undefined =>
+    typeof val === 'number' && Number.isFinite(val) ? val : undefined;
+
   const validatedEdges: Record<RelationId, ConceptRelationVisual> = {};
   for (const id of allRelationIds) {
     const e = parsed.visual.edges[id] as Partial<ConceptRelationVisual> | undefined;
-
-    const sourceHandle =
-      e?.sourceHandle && VALID_HANDLES.has(e.sourceHandle)
-        ? (e.sourceHandle as HandlePosition)
-        : undefined;
-
-    const targetHandle =
-      e?.targetHandle && VALID_HANDLES.has(e.targetHandle)
-        ? (e.targetHandle as HandlePosition)
-        : undefined;
-
-    const arrowDirection =
-      e?.arrowDirection && VALID_ARROW_DIRECTIONS.has(e.arrowDirection)
-        ? (e.arrowDirection as ArrowDirection)
-        : 'forward';
-
-    const curveType =
-      e?.curveType && VALID_CURVE_TYPES.has(e.curveType)
-        ? (e.curveType as EdgeCurveType)
-        : 'smoothstep';
-
-    const manualHandles =
-      typeof e?.manualHandles === 'boolean'
-        ? e.manualHandles
-        : Boolean(
-            (sourceHandle && sourceHandle !== 'auto') ||
-            (targetHandle && targetHandle !== 'auto')
-          );
+    const sourceHandle = valSet<HandlePosition | undefined>(e?.sourceHandle, VALID_HANDLES, undefined);
+    const targetHandle = valSet<HandlePosition | undefined>(e?.targetHandle, VALID_HANDLES, undefined);
+    const arrowDirection = valSet<ArrowDirection>(e?.arrowDirection, VALID_ARROW_DIRECTIONS, 'forward');
+    const curveType = valSet<EdgeCurveType>(e?.curveType, VALID_CURVE_TYPES, 'smoothstep');
+    const manualHandles = typeof e?.manualHandles === 'boolean'
+      ? e.manualHandles
+      : Boolean((sourceHandle && sourceHandle !== 'auto') || (targetHandle && targetHandle !== 'auto'));
 
     validatedEdges[id] = {
       relationId: id,
@@ -1027,18 +819,15 @@ export function parseAndValidateJsonDocument(
       arrowDirection,
       labelOffset: e?.labelOffset
         ? {
-            x: Number.isFinite(e.labelOffset.x) ? e.labelOffset.x : undefined,
-            y: Number.isFinite(e.labelOffset.y) ? e.labelOffset.y : undefined,
-            t: Number.isFinite(e.labelOffset.t) ? e.labelOffset.t : undefined,
+            x: finiteNum(e.labelOffset.x),
+            y: finiteNum(e.labelOffset.y),
+            t: finiteNum(e.labelOffset.t),
           }
         : undefined,
       waypoints: Array.isArray(e?.waypoints)
         ? e.waypoints.filter(
             (pt): pt is Point2D =>
-              pt !== null &&
-              typeof pt === 'object' &&
-              Number.isFinite(pt.x) &&
-              Number.isFinite(pt.y)
+              pt !== null && typeof pt === 'object' && Number.isFinite(pt.x) && Number.isFinite(pt.y)
           )
         : undefined,
       style: e?.style && typeof e.style === 'object' ? e.style : undefined,
@@ -1049,46 +838,28 @@ export function parseAndValidateJsonDocument(
   // 3. Validação de Layout Settings (incluindo freeformCanvas)
   const rawLayout = parsed.visual.layoutSettings;
   const validatedLayoutSettings: LayoutSettings = {
-    algorithm:
-      rawLayout?.algorithm && VALID_LAYOUT_ALGORITHMS.has(rawLayout.algorithm)
-        ? (rawLayout.algorithm as LayoutAlgorithmType)
-        : 'novak-backbone',
+    algorithm: valSet<LayoutAlgorithmType>(rawLayout?.algorithm, VALID_LAYOUT_ALGORITHMS, 'novak-backbone'),
     direction: rawLayout?.direction === 'LR' ? 'LR' : 'TB',
-    nodeSpacingX:
-      typeof rawLayout?.nodeSpacingX === 'number' && Number.isFinite(rawLayout.nodeSpacingX)
-        ? rawLayout.nodeSpacingX
-        : 75,
-    nodeSpacingY:
-      typeof rawLayout?.nodeSpacingY === 'number' && Number.isFinite(rawLayout.nodeSpacingY)
-        ? rawLayout.nodeSpacingY
-        : 110,
-    layerSpacing:
-      typeof rawLayout?.layerSpacing === 'number' && Number.isFinite(rawLayout.layerSpacing)
-        ? rawLayout.layerSpacing
-        : 115,
-    respectPinnedNodes:
-      rawLayout?.respectPinnedNodes !== undefined
-        ? Boolean(rawLayout.respectPinnedNodes)
-        : true,
+    nodeSpacingX: numOr(rawLayout?.nodeSpacingX, 75),
+    nodeSpacingY: numOr(rawLayout?.nodeSpacingY, 110),
+    layerSpacing: numOr(rawLayout?.layerSpacing, 115),
+    respectPinnedNodes: rawLayout?.respectPinnedNodes !== undefined ? Boolean(rawLayout.respectPinnedNodes) : true,
     freeformCanvas: Boolean(rawLayout?.freeformCanvas),
   };
 
   // 4. Validação de Viewport e CrossLinkVisibility
   const rawViewport = parsed.visual.viewport;
   const validatedViewport: ViewportState = {
-    x: Number.isFinite(rawViewport?.x) ? rawViewport!.x : 0,
-    y: Number.isFinite(rawViewport?.y) ? rawViewport!.y : 0,
-    zoom:
-      Number.isFinite(rawViewport?.zoom) && (rawViewport!.zoom as number) > 0
-        ? (rawViewport!.zoom as number)
-        : 1,
+    x: numOr(rawViewport?.x, 0),
+    y: numOr(rawViewport?.y, 0),
+    zoom: typeof rawViewport?.zoom === 'number' && Number.isFinite(rawViewport.zoom) && rawViewport.zoom > 0
+      ? rawViewport.zoom
+      : 1,
   };
 
   const rawCross = parsed.visual.crossLinkVisibility;
   const validatedCrossLinkVisibility: CrossLinkVisibilityMode =
-    rawCross && VALID_CROSS_LINK_VISIBILITY.has(rawCross)
-      ? (rawCross as CrossLinkVisibilityMode)
-      : 'all';
+    valSet<CrossLinkVisibilityMode>(rawCross, VALID_CROSS_LINK_VISIBILITY, 'all');
 
   const diagramMode = parsed.metadata?.diagramMode ?? parsed.semantic.diagramMode;
   const validatedSemantic: SemanticModel = {
