@@ -20,7 +20,7 @@ import {
   Trash2,
   Workflow,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import React, { Fragment, useEffect, useRef } from 'react';
 import { useStore } from 'zustand';
 import type {
   DiagramMode,
@@ -44,18 +44,75 @@ import {
 import { FLOWCHART_SHAPES_CONFIG } from '../canvas/shapeDefinitions';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
+type NewMenuAction = 'new-concept-map' | 'new-flowchart' | 'new-freeform' | 'load-concept-map' | 'load-flowchart' | 'load-freeform' | 'new-blank-canvas';
+
+interface NewMenuItem {
+  testId: string;
+  icon: typeof Network;
+  iconColor: string;
+  title: string;
+  desc: string;
+  action: NewMenuAction;
+}
+
+interface NewMenuGroup {
+  header: string;
+  items: NewMenuItem[];
+}
+
+const NEW_MENU_GROUPS: NewMenuGroup[] = [
+  {
+    header: 'Modelos Iniciais',
+    items: [
+      { testId: 'menu-new-concept-map', icon: Network, iconColor: 'text-blue-600', title: 'Novo Mapa Conceitual', desc: 'Estrutura Novak com bloco inicial para ramificar', action: 'new-concept-map' },
+      { testId: 'menu-new-flowchart', icon: Workflow, iconColor: 'text-indigo-600', title: 'Novo Fluxograma', desc: 'Template inicial com Início, Etapa, Decisão e Fim', action: 'new-flowchart' },
+      { testId: 'menu-new-freeform', icon: Shapes, iconColor: 'text-emerald-600', title: 'Novo Canvas Livre (Freeform)', desc: '7 formas geométricas e conexões livres entre 4 portas cardeais', action: 'new-freeform' },
+    ],
+  },
+  {
+    header: 'Exemplos Prontos do Workspace',
+    items: [
+      { testId: 'menu-load-concept-map-example', icon: FileText, iconColor: 'text-blue-600', title: 'Carregar exemplo.md', desc: 'Mapa conceitual padrão de Inteligência Artificial', action: 'load-concept-map' },
+      { testId: 'menu-load-flowchart-example', icon: FileCode2, iconColor: 'text-indigo-600', title: 'Carregar exemplo-fluxograma.md', desc: 'Fluxograma rico com 7 formas geométricas e desvios', action: 'load-flowchart' },
+      { testId: 'menu-load-freeform-example', icon: Shapes, iconColor: 'text-emerald-600', title: 'Carregar exemplo-canvas-livre', desc: 'Canvas livre com 7 formas, 4 portas manuais e 4 direções de seta', action: 'load-freeform' },
+    ],
+  },
+];
+
+const EXPORT_OPTIONS = [
+  { type: 'json' as const, label: 'Salvar Projeto (.cmap.json)', desc: 'Preserva nós, formas, posições e conexões', icon: FileJson, color: 'text-blue-600' },
+  { type: 'md' as const, label: 'Exportar Markdown (.md)', desc: 'Tabela formatada com frontmatter e formas', icon: FileText, color: 'text-emerald-600' },
+  { type: 'svg' as const, dividerBefore: true, label: 'Exportar Imagem Vetorial (.svg)', desc: 'Formas geométricas escaláveis sem perda', icon: FileCode2, color: 'text-amber-600' },
+  { type: 'png' as const, label: 'Exportar PNG Alta Resolução (2x)', desc: 'Diagrama completo renderizado em alta nitidez', icon: FileImage, color: 'text-violet-600' },
+];
+
 interface TopToolbarProps {
   onOpenTableDrawer: () => void;
   searchInputRef: React.RefObject<HTMLInputElement>;
+}
+
+function Backdrop({ onClick }: { onClick: () => void }) {
+  return <div className="fixed inset-0 z-40" onClick={onClick} />;
 }
 
 export function TopToolbar({
   onOpenTableDrawer,
   searchInputRef,
 }: TopToolbarProps) {
-  const semantic = useConceptMapStore((s) => s.semantic);
-  const visual = useConceptMapStore((s) => s.visual);
-  const sourceFileName = useConceptMapStore((s) => s.sourceFileName);
+  const live = useConceptMapStore.getState();
+  const storeSemantic = useConceptMapStore((s) => s.semantic);
+  const storeVisual = useConceptMapStore((s) => s.visual);
+  const semantic =
+    storeSemantic?.diagramMode || (storeSemantic?.conceptOrder?.length ?? 0) > 0
+      ? storeSemantic
+      : (live.semantic?.diagramMode ? live.semantic : storeSemantic);
+  const visual =
+    Object.keys(storeVisual?.nodes ?? {}).length > 0 ? storeVisual : live.visual;
+  const storeSourceFileName = useConceptMapStore((s) => s.sourceFileName);
+  const sourceFileName =
+    live.sourceFileName !== 'novo-mapa.md' && live.sourceFileName
+      ? live.sourceFileName
+      : storeSourceFileName;
   const hasUnsavedChanges = useConceptMapStore((s) => s.hasUnsavedChanges);
   const isLayoutRunning = useConceptMapStore((s) => s.isLayoutRunning);
   const selectedNodeIds = useConceptMapStore((s) => s.selectedNodeIds);
@@ -85,23 +142,22 @@ export function TopToolbar({
     (s) => s.futureStates.length > 0
   );
 
-  const currentMode: DiagramMode = semantic.diagramMode ?? 'concept-map';
+  const currentMode: DiagramMode =
+    semantic.diagramMode ?? live.semantic.diagramMode ?? 'concept-map';
   const isFlowchart = currentMode === 'flowchart';
 
-  const [newMapMenuOpen, setNewMapMenuOpen] = useState(false);
-  const [shapePaletteOpen, setShapePaletteOpen] = useState(false);
-  const [quickLinkOpen, setQuickLinkOpen] = useState(false);
-  const [quickSource, setQuickSource] = useState('');
-  const [quickPhrase, setQuickPhrase] = useState(
-    isFlowchart ? '' : 'relaciona-se com'
-  );
-  const [quickTarget, setQuickTarget] = useState('');
-  const [quickType, setQuickType] = useState<RelationType>(
-    isFlowchart ? 'sequence' : 'hierarchical'
-  );
+  const [newMapMenuOpen, setNewMapMenuOpen] = React.useState(false);
+  const [shapePaletteOpen, setShapePaletteOpen] = React.useState(false);
+  const [quickLinkOpen, setQuickLinkOpen] = React.useState(false);
+  const [quickForm, setQuickForm] = React.useState({
+    source: '',
+    phrase: isFlowchart ? '' : 'relaciona-se com',
+    target: '',
+    type: (isFlowchart ? 'sequence' : 'hierarchical') as RelationType,
+  });
 
-  const [exportMenuOpen, setExportMenuOpen] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
+  const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const totalSelected = selectedNodeIds.length + selectedEdgeIds.length;
@@ -126,41 +182,43 @@ export function TopToolbar({
 
   const handleOpenQuickLink = () => {
     if (!quickLinkOpen) {
-      // Se houver um nó selecionado no canvas, pré-preenche como Conceito A
       const selectedConcept =
         selectedNodeIds.length > 0
           ? semantic.concepts[selectedNodeIds[0]]
           : undefined;
-      setQuickSource(selectedConcept?.label ?? '');
-      setQuickPhrase(isFlowchart ? '' : 'relaciona-se com');
-      setQuickTarget('');
-      setQuickType(isFlowchart ? 'sequence' : 'hierarchical');
+      setQuickForm({
+        source: selectedConcept?.label ?? '',
+        phrase: isFlowchart ? '' : 'relaciona-se com',
+        target: '',
+        type: isFlowchart ? 'sequence' : 'hierarchical',
+      });
     }
     setQuickLinkOpen((v) => !v);
   };
 
   const handleCreateQuickLink = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickSource.trim() || !quickTarget.trim()) return;
-    if (!isFlowchart && !quickPhrase.trim()) return;
+    const { source, phrase, target, type } = quickForm;
+    if (!source.trim() || !target.trim()) return;
+    if (!isFlowchart && !phrase.trim()) return;
 
     const relType: RelationType = isFlowchart
-      ? quickType === 'conditional' || quickType === 'loop-back'
-        ? quickType
+      ? type === 'conditional' || type === 'loop-back'
+        ? type
         : 'sequence'
-      : quickType === 'cross-link'
+      : type === 'cross-link'
         ? 'cross-link'
         : 'hierarchical';
 
     addPropositionByNames(
-      quickSource,
-      quickPhrase,
-      quickTarget,
+      source,
+      phrase,
+      target,
       relType,
       isFlowchart ? 'process' : 'concept',
       isFlowchart ? 'process' : 'concept'
     );
-    setQuickTarget('');
+    setQuickForm((prev) => ({ ...prev, target: '' }));
     setQuickLinkOpen(false);
     showToast(
       isFlowchart
@@ -194,67 +252,80 @@ export function TopToolbar({
     }
   };
 
-  const handleExportJson = () => {
-    const doc = exportDocument();
-    const json = serializeDocumentToJson(doc);
-    const baseName = sourceFileName.replace(/\.(md|json|cmap\.json)$/i, '');
-    downloadTextFile(
-      json,
-      `${baseName || (isFlowchart ? 'fluxograma' : 'mapa-conceitual')}.cmap.json`,
-      'application/json;charset=utf-8'
-    );
-    markSaved();
-    setExportMenuOpen(false);
-    showToast('Projeto salvo em .cmap.json');
-  };
-
-  const handleExportMarkdown = () => {
-    const md = exportSemanticToMarkdown(semantic);
-    const baseName = sourceFileName.replace(/\.(md|json|cmap\.json)$/i, '');
-    downloadTextFile(
-      md,
-      `${baseName || (isFlowchart ? 'fluxograma' : 'mapa-conceitual')}-editado.md`,
-      'text/markdown;charset=utf-8'
-    );
-    markSaved();
-    setExportMenuOpen(false);
-    showToast('Tabela Markdown exportada (.md)');
-  };
-
-  const handleExportSvg = () => {
-    const svg = generateStandaloneVectorSvg(semantic, visual);
-    const baseName = sourceFileName.replace(/\.(md|json|cmap\.json)$/i, '');
-    downloadTextFile(
-      svg,
-      `${baseName || (isFlowchart ? 'fluxograma' : 'mapa-conceitual')}.svg`,
-      'image/svg+xml;charset=utf-8'
-    );
-    markSaved();
-    setExportMenuOpen(false);
-    showToast(
-      isFlowchart
-        ? 'Fluxograma vetorial exportado (.svg)'
-        : 'Mapa vetorial exportado (.svg)'
-    );
-  };
-
-  const handleExportPng = async () => {
+  const handleExport = async (type: 'json' | 'md' | 'svg' | 'png') => {
     try {
-      setExportMenuOpen(false);
-      showToast('Gerando PNG de alta resolução (2x)...');
-      const svg = generateStandaloneVectorSvg(semantic, visual);
-      const blob = await renderSvgStringToPngBlob(svg, 2);
-      const baseName = sourceFileName.replace(/\.(md|json|cmap\.json)$/i, '');
-      downloadBlob(
-        blob,
-        `${baseName || (isFlowchart ? 'fluxograma' : 'mapa-conceitual')}.png`
-      );
+      const baseName =
+        sourceFileName.replace(/\.(md|json|cmap\.json)$/i, '') ||
+        (isFlowchart ? 'fluxograma' : 'mapa-conceitual');
+      if (type === 'json') {
+        const doc = exportDocument();
+        downloadTextFile(
+          serializeDocumentToJson(doc),
+          `${baseName}.cmap.json`,
+          'application/json;charset=utf-8'
+        );
+        showToast('Projeto salvo em .cmap.json');
+      } else if (type === 'md') {
+        downloadTextFile(
+          exportSemanticToMarkdown(semantic),
+          `${baseName}-editado.md`,
+          'text/markdown;charset=utf-8'
+        );
+        showToast('Tabela Markdown exportada (.md)');
+      } else if (type === 'svg') {
+        downloadTextFile(
+          generateStandaloneVectorSvg(semantic, visual),
+          `${baseName}.svg`,
+          'image/svg+xml;charset=utf-8'
+        );
+        showToast(
+          isFlowchart
+            ? 'Fluxograma vetorial exportado (.svg)'
+            : 'Mapa vetorial exportado (.svg)'
+        );
+      } else {
+        setExportMenuOpen(false);
+        showToast('Gerando PNG de alta resolução (2x)...');
+        const svg = generateStandaloneVectorSvg(semantic, visual);
+        const blob = await renderSvgStringToPngBlob(svg, 2);
+        downloadBlob(blob, `${baseName}.png`);
+        showToast('Imagem PNG exportada com sucesso!');
+      }
       markSaved();
-      showToast('Imagem PNG exportada com sucesso!');
+      setExportMenuOpen(false);
     } catch (err) {
       alert(
         err instanceof Error ? err.message : 'Falha ao exportar imagem PNG.'
       );
+    }
+  };
+
+  const handleNewMenuAction = async (action: NewMenuAction) => {
+    setNewMapMenuOpen(false);
+    if (action === 'new-concept-map') {
+      createNewEmptyMap(true, 'concept-map');
+      showToast('Novo mapa conceitual iniciado com Conceito Principal.');
+    } else if (action === 'new-flowchart') {
+      createNewEmptyMap(true, 'flowchart');
+      showToast('Novo fluxograma iniciado (Início → Processo → Decisão → Fim).');
+    } else if (action === 'new-freeform') {
+      createNewEmptyMap(true, 'concept-map', { freeformCanvas: true });
+      showToast(
+        'Novo Canvas Livre iniciado com suporte a 7 formas geométricas e conexões livres.'
+      );
+    } else if (action === 'load-concept-map' || action === 'load-flowchart') {
+      const p = await (action === 'load-flowchart'
+        ? fetchFlowchartWorkspaceInput()
+        : fetchDefaultWorkspaceInput());
+      loadFromMarkdown(p.content, p.fileName);
+      showToast(`${p.fileName} (${action === 'load-flowchart' ? 'Fluxograma' : 'Mapa Conceitual'}) carregado.`);
+    } else if (action === 'load-freeform') {
+      const p = await fetchFreeformWorkspaceInput();
+      loadFromDocument(parseAndValidateJsonDocument(p.content));
+      showToast('exemplo-canvas-livre.cmap.json (Canvas Livre) carregado.');
+    } else if (action === 'new-blank-canvas') {
+      createNewEmptyMap(false, currentMode);
+      showToast('Tela inicial restaurada.');
     }
   };
 
@@ -282,44 +353,51 @@ export function TopToolbar({
           aria-label="Alternar Modo do Diagrama"
           className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-medium text-slate-600"
         >
-          <button
-            type="button"
-            data-testid="mode-switcher-concept-map"
-            onClick={() => {
-              if (currentMode !== 'concept-map') {
-                setDiagramMode('concept-map');
-                showToast('Modo alterado para Mapa Conceitual.');
-              }
-            }}
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold whitespace-nowrap transition ${
-              !isFlowchart
-                ? 'bg-white text-blue-700 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            title="Alternar para Mapa Conceitual (Novak)"
-          >
-            <Network className="h-3.5 w-3.5 shrink-0 text-blue-600" />
-            <span>Mapa Conceitual</span>
-          </button>
-          <button
-            type="button"
-            data-testid="mode-switcher-flowchart"
-            onClick={() => {
-              if (currentMode !== 'flowchart') {
-                setDiagramMode('flowchart');
-                showToast('Modo alterado para Fluxograma.');
-              }
-            }}
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold whitespace-nowrap transition ${
-              isFlowchart
-                ? 'bg-white text-indigo-700 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            title="Alternar para Fluxograma de Processos"
-          >
-            <Workflow className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
-            <span>Fluxograma</span>
-          </button>
+          {(
+            [
+              {
+                mode: 'concept-map' as const,
+                label: 'Mapa Conceitual',
+                icon: Network,
+                activeClass: 'text-blue-700',
+                iconColor: 'text-blue-600',
+                title: 'Alternar para Mapa Conceitual (Novak)',
+              },
+              {
+                mode: 'flowchart' as const,
+                label: 'Fluxograma',
+                icon: Workflow,
+                activeClass: 'text-indigo-700',
+                iconColor: 'text-indigo-600',
+                title: 'Alternar para Fluxograma de Processos',
+              },
+            ]
+          ).map((m) => {
+            const isActive = currentMode === m.mode;
+            const Icon = m.icon;
+            return (
+              <button
+                key={m.mode}
+                type="button"
+                data-testid={`mode-switcher-${m.mode}`}
+                onClick={() => {
+                  if (currentMode !== m.mode) {
+                    setDiagramMode(m.mode);
+                    showToast(`Modo alterado para ${m.label}.`);
+                  }
+                }}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold whitespace-nowrap transition ${
+                  isActive
+                    ? `bg-white ${m.activeClass} shadow-xs`
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title={m.title}
+              >
+                <Icon className={`h-3.5 w-3.5 shrink-0 ${m.iconColor}`} />
+                <span>{m.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Feature 41: Menu Novo ▾ Expandido */}
@@ -337,168 +415,34 @@ export function TopToolbar({
 
           {newMapMenuOpen && (
             <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setNewMapMenuOpen(false)}
-              />
+              <Backdrop onClick={() => setNewMapMenuOpen(false)} />
               <div className="absolute left-0 z-50 mt-1.5 w-72 rounded-xl border border-slate-200 bg-white p-2 text-xs shadow-xl">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Modelos Iniciais
-                </div>
-
-                {/* Opção 1: Novo Mapa Conceitual */}
-                <button
-                  type="button"
-                  data-testid="menu-new-concept-map"
-                  onClick={() => {
-                    createNewEmptyMap(true, 'concept-map');
-                    setNewMapMenuOpen(false);
-                    showToast(
-                      'Novo mapa conceitual iniciado com Conceito Principal.'
-                    );
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <Network className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Novo Mapa Conceitual
+                {NEW_MENU_GROUPS.map((group, gIdx) => (
+                  <Fragment key={group.header}>
+                    {gIdx > 0 && <div className="my-1.5 h-px bg-slate-100" />}
+                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {group.header}
                     </div>
-                    <div className="text-[10px] text-slate-500">
-                      Estrutura Novak com bloco inicial para ramificar
-                    </div>
-                  </div>
-                </button>
-
-                {/* Opção 2: Novo Fluxograma */}
-                <button
-                  type="button"
-                  data-testid="menu-new-flowchart"
-                  onClick={() => {
-                    createNewEmptyMap(true, 'flowchart');
-                    setNewMapMenuOpen(false);
-                    showToast(
-                      'Novo fluxograma iniciado (Início → Processo → Decisão → Fim).'
-                    );
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Novo Fluxograma
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Template inicial com Início, Etapa, Decisão e Fim
-                    </div>
-                  </div>
-                </button>
-
-                {/* Opção 3: Novo Canvas Livre (Freeform) */}
-                <button
-                  type="button"
-                  data-testid="menu-new-freeform"
-                  onClick={() => {
-                    createNewEmptyMap(true, 'concept-map', { freeformCanvas: true });
-                    setNewMapMenuOpen(false);
-                    showToast(
-                      'Novo Canvas Livre iniciado com suporte a 7 formas geométricas e conexões livres.'
-                    );
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <Shapes className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Novo Canvas Livre (Freeform)
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      7 formas geométricas e conexões livres entre 4 portas cardeais
-                    </div>
-                  </div>
-                </button>
-
-                <div className="my-1.5 h-px bg-slate-100" />
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  Exemplos Prontos do Workspace
-                </div>
-
-                {/* Opção 3: Carregar exemplo.md */}
-                <button
-                  type="button"
-                  data-testid="menu-load-concept-map-example"
-                  onClick={() => {
-                    setNewMapMenuOpen(false);
-                    fetchDefaultWorkspaceInput().then((p) => {
-                      loadFromMarkdown(p.content, p.fileName);
-                      showToast('exemplo.md (Mapa Conceitual) carregado.');
-                    });
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <FileText className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Carregar exemplo.md
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Mapa conceitual padrão de Inteligência Artificial
-                    </div>
-                  </div>
-                </button>
-
-                {/* Opção 4: Carregar exemplo-fluxograma.md */}
-                <button
-                  type="button"
-                  data-testid="menu-load-flowchart-example"
-                  onClick={() => {
-                    setNewMapMenuOpen(false);
-                    fetchFlowchartWorkspaceInput().then((p) => {
-                      loadFromMarkdown(p.content, p.fileName);
-                      showToast(
-                        'exemplo-fluxograma.md (Fluxograma) carregado.'
+                    {group.items.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.testId}
+                          type="button"
+                          data-testid={item.testId}
+                          onClick={() => handleNewMenuAction(item.action)}
+                          className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
+                        >
+                          <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${item.iconColor}`} />
+                          <div>
+                            <div className="font-semibold text-slate-900">{item.title}</div>
+                            <div className="text-[10px] text-slate-500">{item.desc}</div>
+                          </div>
+                        </button>
                       );
-                    });
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <FileCode2 className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Carregar exemplo-fluxograma.md
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Fluxograma rico com 7 formas geométricas e desvios
-                    </div>
-                  </div>
-                </button>
-
-                {/* Opção 5: Carregar exemplo-canvas-livre.cmap.json */}
-                <button
-                  type="button"
-                  data-testid="menu-load-freeform-example"
-                  onClick={() => {
-                    setNewMapMenuOpen(false);
-                    fetchFreeformWorkspaceInput().then((p) => {
-                      const doc = parseAndValidateJsonDocument(p.content);
-                      loadFromDocument(doc);
-                      showToast(
-                        'exemplo-canvas-livre.cmap.json (Canvas Livre) carregado.'
-                      );
-                    });
-                  }}
-                  className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100 transition"
-                >
-                  <Shapes className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Carregar exemplo-canvas-livre
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Canvas livre com 7 formas, 4 portas manuais e 4 direções de seta
-                    </div>
-                  </div>
-                </button>
+                    })}
+                  </Fragment>
+                ))}
 
                 <div className="my-1.5 h-px bg-slate-100" />
 
@@ -506,11 +450,7 @@ export function TopToolbar({
                 <button
                   type="button"
                   data-testid="menu-new-blank-canvas"
-                  onClick={() => {
-                    createNewEmptyMap(false, currentMode);
-                    setNewMapMenuOpen(false);
-                    showToast('Tela inicial restaurada.');
-                  }}
+                  onClick={() => handleNewMenuAction('new-blank-canvas')}
                   className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-slate-600 hover:bg-slate-100 transition"
                 >
                   <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" />
@@ -563,7 +503,6 @@ export function TopToolbar({
               <Plus className="h-3.5 w-3.5" />
               + Etapa
             </button>
-
             <button
               type="button"
               data-testid="toolbar-add-decision-btn"
@@ -618,10 +557,7 @@ export function TopToolbar({
 
           {shapePaletteOpen && (
             <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setShapePaletteOpen(false)}
-              />
+              <Backdrop onClick={() => setShapePaletteOpen(false)} />
               <div
                 data-testid="toolbar-shape-palette-popover"
                 className="absolute left-0 z-50 mt-1.5 w-72 rounded-xl border border-slate-200 bg-white p-2.5 text-xs shadow-xl"
@@ -650,19 +586,12 @@ export function TopToolbar({
                       }`}
                       title={`Adicionar ${opt.label} (${opt.sublabel})`}
                     >
-                      <div
-                        data-testid={`shape-palette-item-${opt.shape}`}
-                        className="shrink-0 text-slate-500 transition-colors group-hover:text-indigo-600"
-                      >
+                      <div data-testid={`shape-palette-item-${opt.shape}`} className="shrink-0 text-slate-500 transition-colors group-hover:text-indigo-600">
                         {opt.renderIcon(false)}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-[11px] font-semibold text-slate-800 group-hover:text-indigo-950">
-                          {opt.label}
-                        </div>
-                        <div className="truncate text-[9px] text-slate-400 group-hover:text-indigo-600">
-                          {opt.sublabel}
-                        </div>
+                        <div className="truncate text-[11px] font-semibold text-slate-800 group-hover:text-indigo-950">{opt.label}</div>
+                        <div className="truncate text-[9px] text-slate-400 group-hover:text-indigo-600">{opt.sublabel}</div>
                       </div>
                     </button>
                   ))}
@@ -695,10 +624,7 @@ export function TopToolbar({
 
           {quickLinkOpen && (
             <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setQuickLinkOpen(false)}
-              />
+              <Backdrop onClick={() => setQuickLinkOpen(false)} />
               <form
                 onSubmit={handleCreateQuickLink}
                 className="absolute left-0 z-50 mt-1.5 w-80 rounded-xl border border-slate-200 bg-white p-3.5 text-xs shadow-xl"
@@ -728,8 +654,13 @@ export function TopToolbar({
                       placeholder={
                         isFlowchart ? 'Ex.: Validar Dados' : 'Ex.: Inteligência Artificial'
                       }
-                      value={quickSource}
-                      onChange={(e) => setQuickSource(e.target.value)}
+                      value={quickForm.source}
+                      onChange={(e) =>
+                        setQuickForm((prev) => ({
+                          ...prev,
+                          source: e.target.value,
+                        }))
+                      }
                       className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
                     />
                   </div>
@@ -748,8 +679,13 @@ export function TopToolbar({
                           ? 'Ex.: Sim, Não, aprovado (opcional)'
                           : 'Ex.: utiliza, depende de, gera...'
                       }
-                      value={quickPhrase}
-                      onChange={(e) => setQuickPhrase(e.target.value)}
+                      value={quickForm.phrase}
+                      onChange={(e) =>
+                        setQuickForm((prev) => ({
+                          ...prev,
+                          phrase: e.target.value,
+                        }))
+                      }
                       className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs italic text-slate-800 focus:border-blue-500 focus:outline-none"
                     />
                   </div>
@@ -767,8 +703,13 @@ export function TopToolbar({
                       placeholder={
                         isFlowchart ? 'Ex.: Salvar no Banco' : 'Ex.: Aprendizado de Máquina'
                       }
-                      value={quickTarget}
-                      onChange={(e) => setQuickTarget(e.target.value)}
+                      value={quickForm.target}
+                      onChange={(e) =>
+                        setQuickForm((prev) => ({
+                          ...prev,
+                          target: e.target.value,
+                        }))
+                      }
                       className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
                     />
                   </div>
@@ -778,32 +719,25 @@ export function TopToolbar({
                       Tipo de {isFlowchart ? 'Transição' : 'Relação'}
                     </label>
                     <select
-                      value={quickType}
+                      value={quickForm.type}
                       onChange={(e) =>
-                        setQuickType(e.target.value as RelationType)
+                        setQuickForm((prev) => ({
+                          ...prev,
+                          type: e.target.value as RelationType,
+                        }))
                       }
                       className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none"
                     >
                       {isFlowchart ? (
                         <>
-                          <option value="sequence">
-                            Sequencial (Fluxo Direto)
-                          </option>
-                          <option value="conditional">
-                            Condicional (Desvio / Decisão)
-                          </option>
-                          <option value="loop-back">
-                            Retorno (Loop-back / Repetição)
-                          </option>
+                          <option value="sequence">Sequencial (Fluxo Direto)</option>
+                          <option value="conditional">Condicional (Desvio / Decisão)</option>
+                          <option value="loop-back">Retorno (Loop-back / Repetição)</option>
                         </>
                       ) : (
                         <>
-                          <option value="hierarchical">
-                            Hierárquica (Linha Sólida)
-                          </option>
-                          <option value="cross-link">
-                            Ligação Cruzada (Linha Tracejada)
-                          </option>
+                          <option value="hierarchical">Hierárquica (Linha Sólida)</option>
+                          <option value="cross-link">Ligação Cruzada (Linha Tracejada)</option>
                         </>
                       )}
                     </select>
@@ -881,12 +815,8 @@ export function TopToolbar({
           }
           className="max-w-[140px] truncate rounded-lg border border-slate-200 bg-slate-50 px-1.5 py-1 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none"
         >
-          <option value="novak-backbone">
-            Hierárquico Novak {!isFlowchart ? '★' : ''}
-          </option>
-          <option value="dagre-hierarchical">
-            Dagre Compacto {isFlowchart ? '★' : ''}
-          </option>
+          <option value="novak-backbone">Hierárquico Novak {!isFlowchart ? '★' : ''}</option>
+          <option value="dagre-hierarchical">Dagre Compacto {isFlowchart ? '★' : ''}</option>
           <option value="elk-layered">ELK Layered</option>
           <option value="force-directed">Orgânico (Force)</option>
           <option value="radial-tree">Radial</option>
@@ -942,32 +872,24 @@ export function TopToolbar({
         <button
           type="button"
           data-testid="toolbar-reload-example-btn"
-          onClick={() => {
+          onClick={async () => {
             if (visual.layoutSettings.freeformCanvas) {
-              fetchFreeformWorkspaceInput().then((p) => {
-                const doc = parseAndValidateJsonDocument(p.content);
-                loadFromDocument(doc);
-                showToast('exemplo-canvas-livre.cmap.json carregado do workspace.');
-              });
-            } else if (isFlowchart) {
-              fetchFlowchartWorkspaceInput().then((p) => {
-                loadFromMarkdown(p.content, p.fileName);
-                showToast('exemplo-fluxograma.md carregado do workspace.');
-              });
+              const p = await fetchFreeformWorkspaceInput();
+              loadFromDocument(parseAndValidateJsonDocument(p.content));
+              showToast('exemplo-canvas-livre.cmap.json carregado do workspace.');
             } else {
-              fetchDefaultWorkspaceInput().then((p) => {
-                loadFromMarkdown(p.content, p.fileName);
-                showToast('exemplo.md carregado do workspace.');
-              });
+              const p = await (isFlowchart
+                ? fetchFlowchartWorkspaceInput()
+                : fetchDefaultWorkspaceInput());
+              loadFromMarkdown(p.content, p.fileName);
+              showToast(`${p.fileName} carregado do workspace.`);
             }
           }}
           className="rounded-lg border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-50 transition"
           title={
             visual.layoutSettings.freeformCanvas
               ? 'Recarregar exemplo-canvas-livre.cmap.json do disco'
-              : isFlowchart
-                ? 'Recarregar exemplo-fluxograma.md do disco'
-                : 'Recarregar exemplo.md do disco'
+              : `Recarregar ${isFlowchart ? 'exemplo-fluxograma.md' : 'exemplo.md'} do disco`
           }
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -997,76 +919,29 @@ export function TopToolbar({
 
           {exportMenuOpen && (
             <>
-              <div
-                className="fixed inset-0 z-40"
-                onClick={() => setExportMenuOpen(false)}
-              />
+              <Backdrop onClick={() => setExportMenuOpen(false)} />
               <div className="absolute right-0 z-50 mt-1.5 w-60 rounded-xl border border-slate-200 bg-white p-1.5 text-xs shadow-xl">
-                <button
-                  type="button"
-                  onClick={handleExportJson}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100"
-                >
-                  <FileJson className="h-4 w-4 text-blue-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Salvar Projeto (.cmap.json)
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Preserva nós, formas, posições e conexões
-                    </div>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleExportMarkdown}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100"
-                >
-                  <FileText className="h-4 w-4 text-emerald-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Exportar Markdown (.md)
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Tabela formatada com frontmatter e formas
-                    </div>
-                  </div>
-                </button>
-
-                <div className="my-1 h-px bg-slate-100" />
-
-                <button
-                  type="button"
-                  onClick={handleExportSvg}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100"
-                >
-                  <FileCode2 className="h-4 w-4 text-amber-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Exportar Imagem Vetorial (.svg)
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Formas geométricas escaláveis sem perda
-                    </div>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleExportPng}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100"
-                >
-                  <FileImage className="h-4 w-4 text-violet-600" />
-                  <div>
-                    <div className="font-semibold text-slate-900">
-                      Exportar PNG Alta Resolução (2x)
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      Diagrama completo renderizado em alta nitidez
-                    </div>
-                  </div>
-                </button>
+                {EXPORT_OPTIONS.map((opt) => {
+                  const Icon = opt.icon;
+                  return (
+                    <Fragment key={opt.type}>
+                      {opt.dividerBefore && (
+                        <div className="my-1 h-px bg-slate-100" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleExport(opt.type)}
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-slate-100"
+                      >
+                        <Icon className={`h-4 w-4 ${opt.color}`} />
+                        <div>
+                          <div className="font-semibold text-slate-900">{opt.label}</div>
+                          <div className="text-[10px] text-slate-500">{opt.desc}</div>
+                        </div>
+                      </button>
+                    </Fragment>
+                  );
+                })}
               </div>
             </>
           )}

@@ -198,14 +198,10 @@ function generateUniqueConceptId(
     .replace(/^-+|-+$/g, '');
 
   const prefix = baseSlug ? `concept-${baseSlug}` : 'concept-novo';
-  if (!existingConcepts[prefix]) {
-    return prefix;
-  }
+  if (!existingConcepts[prefix]) return prefix;
 
   let counter = 2;
-  while (existingConcepts[`${prefix}-${counter}`]) {
-    counter++;
-  }
+  while (existingConcepts[`${prefix}-${counter}`]) counter++;
   return `${prefix}-${counter}`;
 }
 
@@ -213,9 +209,7 @@ function generateUniqueRelationId(
   existingRelations: Record<RelationId, unknown>
 ): RelationId {
   let counter = Object.keys(existingRelations).length + 1;
-  while (existingRelations[`rel-${counter}`]) {
-    counter++;
-  }
+  while (existingRelations[`rel-${counter}`]) counter++;
   return `rel-${counter}`;
 }
 
@@ -233,20 +227,33 @@ function getLocalStorage(): Storage | null {
   return null;
 }
 
-function persistDraftSnapshot(
-  semantic: SemanticModel,
-  visual: VisualModel,
-  sourceFileName: string,
-  diagnostics: ParseDiagnostic[]
-): string {
-  const now = new Date().toISOString();
+let pendingDraftSnapshot: {
+  semantic: SemanticModel;
+  visual: VisualModel;
+  sourceFileName: string;
+  diagnostics: ParseDiagnostic[];
+  timestamp: string;
+} | null = null;
+
+let draftDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushDraftSnapshot(): string | null {
+  if (draftDebounceTimer) {
+    clearTimeout(draftDebounceTimer);
+    draftDebounceTimer = null;
+  }
+  if (!pendingDraftSnapshot) return null;
+
+  const { semantic, visual, sourceFileName, diagnostics, timestamp } = pendingDraftSnapshot;
+  pendingDraftSnapshot = null;
+
   const doc: ConceptMapDocument = {
     schemaVersion: '1.0.0',
     metadata: {
       id: 'local-draft',
       sourceFileName,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: timestamp,
+      updatedAt: timestamp,
       originalColumnCount: 5,
       diagramMode: semantic.diagramMode ?? 'concept-map',
     },
@@ -261,10 +268,357 @@ function persistDraftSnapshot(
       storage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(doc));
     }
   } catch {
-    // Ignora falha de quota em ambientes restritos
+    // Quota failure or restricted environment
   }
 
-  return now;
+  return timestamp;
+}
+
+function persistDraftSnapshot(
+  semantic: SemanticModel,
+  visual: VisualModel,
+  sourceFileName: string,
+  diagnostics: ParseDiagnostic[],
+  immediate = false
+): string {
+  const timestamp = new Date().toISOString();
+  pendingDraftSnapshot = {
+    semantic,
+    visual,
+    sourceFileName,
+    diagnostics,
+    timestamp,
+  };
+
+  if (immediate) {
+    flushDraftSnapshot();
+    return timestamp;
+  }
+
+  if (draftDebounceTimer) {
+    clearTimeout(draftDebounceTimer);
+  }
+  draftDebounceTimer = setTimeout(() => {
+    flushDraftSnapshot();
+  }, 300);
+
+  return timestamp;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    flushDraftSnapshot();
+  });
+}
+
+const RELATION_RAW_TYPE_MAP: Record<RelationType, string> = {
+  sequence: 'sequencial',
+  conditional: 'condicional',
+  'loop-back': 'retorno',
+  hierarchical: 'hierárquica',
+  'cross-link': 'ligação cruzada',
+};
+
+const getRelationRawType = (type: RelationType): string =>
+  RELATION_RAW_TYPE_MAP[type] ?? 'ligação cruzada';
+
+const getFlowKind = (type: RelationType, isFlowchart: boolean): FlowTransitionKind | undefined =>
+  isFlowchart ? (type === 'conditional' || type === 'loop-back' ? type : 'sequence') : undefined;
+
+const getDefaultCurveType = (isFlowchart: boolean, type?: RelationType): EdgeCurveType =>
+  isFlowchart || type === 'hierarchical' ? 'smoothstep' : 'bezier';
+
+function applySiblingLabelOffsets(
+  updatedEdges: Record<RelationId, VisualModel['edges'][string]>,
+  semantic: SemanticModel,
+  sourceId: ConceptId,
+  labelOffsets: Record<RelationId, { t?: number; x?: number; y?: number }>
+): void {
+  for (const rId of semantic.relationOrder) {
+    if (
+      semantic.relations[rId]?.sourceId === sourceId &&
+      updatedEdges[rId] &&
+      labelOffsets[rId]
+    ) {
+      updatedEdges[rId] = {
+        ...updatedEdges[rId],
+        labelOffset: labelOffsets[rId],
+      };
+    }
+  }
+}
+
+const FLOWCHART_STARTER_NODES = [
+  { id: 'concept-inicio', label: 'Início', shape: 'terminal' as const, y: 60, layer: 0 },
+  { id: 'concept-processo', label: 'Processo', shape: 'process' as const, y: 180, layer: 1 },
+  { id: 'concept-decisao', label: 'Decisão', shape: 'decision' as const, y: 310, layer: 2 },
+  { id: 'concept-fim', label: 'Fim', shape: 'terminal' as const, y: 470, layer: 3 },
+];
+
+const FLOWCHART_STARTER_EDGES = [
+  { id: 'rel-1', src: 'concept-inicio', tgt: 'concept-processo', phrase: '', type: 'sequence' as const, flowKind: 'sequence' as const },
+  { id: 'rel-2', src: 'concept-processo', tgt: 'concept-decisao', phrase: '', type: 'sequence' as const, flowKind: 'sequence' as const },
+  { id: 'rel-3', src: 'concept-decisao', tgt: 'concept-fim', phrase: 'Sim', type: 'conditional' as const, flowKind: 'conditional' as const },
+];
+
+function createStarterMap(mode: DiagramMode): {
+  semantic: Pick<SemanticModel, 'concepts' | 'conceptOrder' | 'relations' | 'relationOrder'>;
+  visual: Pick<VisualModel, 'nodes' | 'edges'>;
+  selectedNodes: ConceptId[];
+} {
+  if (mode !== 'flowchart') {
+    const id = generateUniqueConceptId('Conceito Principal', {});
+    return {
+      semantic: {
+        concepts: { [id]: { id, label: 'Conceito Principal', normalizedKey: normalizeConceptKey('Conceito Principal'), nodeShape: 'concept', sourceMeta: { createdManually: true } } },
+        conceptOrder: [id],
+        relations: {},
+        relationOrder: [],
+      },
+      visual: {
+        nodes: { [id]: { conceptId: id, position: { x: 400, y: 120 }, dimensions: estimateConceptNodeDimensions('Conceito Principal'), pinned: false, customSize: false, computedLayer: 0, nodeShape: 'concept' } },
+        edges: {},
+      },
+      selectedNodes: [id],
+    };
+  }
+
+  const nodes: Record<ConceptId, ConceptNodeVisual> = {};
+  const concepts: Record<ConceptId, SemanticModel['concepts'][string]> = {};
+  const edges: Record<RelationId, VisualModel['edges'][string]> = {};
+  const relations: Record<RelationId, SemanticModel['relations'][string]> = {};
+
+  FLOWCHART_STARTER_NODES.forEach((item) => {
+    concepts[item.id] = { id: item.id, label: item.label, normalizedKey: normalizeConceptKey(item.label), nodeShape: item.shape, sourceMeta: { createdManually: true } };
+    nodes[item.id] = { conceptId: item.id, position: { x: 400, y: item.y }, dimensions: estimateConceptNodeDimensions(item.label, undefined, false, item.shape), pinned: false, customSize: false, computedLayer: item.layer, nodeShape: item.shape };
+  });
+
+  FLOWCHART_STARTER_EDGES.forEach((item, idx) => {
+    relations[item.id] = { id: item.id, orderIndex: idx + 1, sourceId: item.src, linkingPhrase: item.phrase, targetId: item.tgt, type: item.type, flowKind: item.flowKind, rawType: getRelationRawType(item.type), sourceMeta: { createdManually: true } };
+    edges[item.id] = { relationId: item.id, curveType: 'smoothstep', sourceHandle: 'bottom', targetHandle: 'top', labelOffset: { t: 0.5 }, flowKind: item.flowKind };
+  });
+
+  return {
+    semantic: { concepts, conceptOrder: FLOWCHART_STARTER_NODES.map((n) => n.id), relations, relationOrder: FLOWCHART_STARTER_EDGES.map((e) => e.id) },
+    visual: { nodes, edges },
+    selectedNodes: ['concept-inicio'],
+  };
+}
+
+interface HandleResolutionInput {
+  sourceHandle?: HandlePosition;
+  targetHandle?: HandlePosition;
+  manualHandles?: boolean;
+}
+
+function resolveEdgeHandles(
+  existingEdge: VisualModel['edges'][string] | undefined,
+  input: HandleResolutionInput | undefined,
+  smart: { sourceHandle?: HandlePosition; targetHandle?: HandlePosition } | undefined,
+  isFreeform: boolean
+): { sourceHandle: HandlePosition; targetHandle: HandlePosition; manualHandles: boolean } {
+  const manualHandles = input?.manualHandles !== undefined
+    ? input.manualHandles
+    : (input?.sourceHandle === 'auto' && input?.targetHandle === 'auto')
+      ? false
+      : (Boolean(input?.sourceHandle && input.sourceHandle !== 'auto') || Boolean(input?.targetHandle && input.targetHandle !== 'auto'))
+        ? true
+        : (existingEdge?.manualHandles ?? isFreeform);
+
+  const preserve = manualHandles || isFreeform;
+  const resolve = (spec?: HandlePosition, exist?: HandlePosition, fallback?: HandlePosition, def: HandlePosition = 'bottom') => {
+    if (spec !== undefined) return spec === 'auto' ? (fallback ?? def) : spec;
+    if (preserve && exist && exist !== 'auto') return exist;
+    return fallback ?? exist ?? def;
+  };
+
+  return {
+    manualHandles,
+    sourceHandle: resolve(input?.sourceHandle, existingEdge?.sourceHandle, smart?.sourceHandle, 'bottom'),
+    targetHandle: resolve(input?.targetHandle, existingEdge?.targetHandle, smart?.targetHandle, 'top'),
+  };
+}
+
+function updateIncidentSmartHandles(
+  semantic: SemanticModel,
+  nodes: Record<ConceptId, ConceptNodeVisual>,
+  edges: Record<RelationId, VisualModel['edges'][string]>,
+  affectedIds: Set<ConceptId>,
+  direction: 'TB' | 'LR',
+  isFreeform: boolean
+): Record<RelationId, VisualModel['edges'][string]> {
+  if (isFreeform) return edges;
+
+  const isIncident = (relId: RelationId) => {
+    const rel = semantic.relations[relId];
+    return Boolean(rel && (affectedIds.has(rel.sourceId) || affectedIds.has(rel.targetId)));
+  };
+
+  if (!semantic.relationOrder.some((rId) => isIncident(rId) && !edges[rId]?.manualHandles)) {
+    return edges;
+  }
+
+  const smartHandles = computeSmartEdgeHandles(semantic, nodes, direction);
+  let nextEdges = edges;
+
+  for (const relId of semantic.relationOrder) {
+    if (!isIncident(relId)) continue;
+    const prev = edges[relId];
+    const smart = smartHandles[relId];
+    if (prev && smart && !prev.manualHandles &&
+      (prev.sourceHandle !== smart.sourceHandle || prev.targetHandle !== smart.targetHandle)
+    ) {
+      if (nextEdges === edges) nextEdges = { ...edges };
+      nextEdges[relId] = { ...prev, sourceHandle: smart.sourceHandle, targetHandle: smart.targetHandle };
+    }
+  }
+
+  return nextEdges;
+}
+
+function resolveOrCreateConceptNode(
+  cleanLabel: string,
+  shape: FlowchartNodeShape | undefined,
+  rawShapeTag: string | undefined,
+  concepts: Record<ConceptId, SemanticModel['concepts'][string]>,
+  conceptOrder: ConceptId[],
+  nodes: Record<ConceptId, ConceptNodeVisual>,
+  calcPosition: () => Point2D,
+  layer = 0
+): ConceptId {
+  const key = normalizeConceptKey(cleanLabel);
+  const existingId = Object.values(concepts).find((c) => c.normalizedKey === key)?.id;
+  if (existingId) {
+    if (shape && !concepts[existingId]?.nodeShape) {
+      concepts[existingId] = { ...concepts[existingId], nodeShape: shape };
+      const prevVis = nodes[existingId];
+      if (prevVis) {
+        nodes[existingId] = {
+          ...prevVis,
+          nodeShape: shape,
+          dimensions: estimateConceptNodeDimensions(
+            cleanLabel,
+            prevVis.dimensions,
+            prevVis.customSize,
+            shape
+          ),
+        };
+      }
+    }
+    return existingId;
+  }
+
+  const id = generateUniqueConceptId(cleanLabel, concepts);
+  const dims = estimateConceptNodeDimensions(cleanLabel, undefined, false, shape);
+
+  concepts[id] = {
+    id,
+    label: cleanLabel,
+    normalizedKey: key,
+    nodeShape: shape,
+    sourceMeta: {
+      createdManually: true,
+      ...(rawShapeTag ? { rawShapeTag } : {}),
+    },
+  };
+  conceptOrder.push(id);
+
+  nodes[id] = {
+    conceptId: id,
+    position: calcPosition(),
+    dimensions: dims,
+    pinned: false,
+    customSize: false,
+    computedLayer: layer,
+    nodeShape: shape,
+  };
+
+  return id;
+}
+
+function createVisualEdgeRecord(
+  relationId: RelationId,
+  sourceId: ConceptId,
+  semantic: SemanticModel,
+  nodes: Record<ConceptId, ConceptNodeVisual>,
+  edges: Record<RelationId, VisualModel['edges'][string]>,
+  direction: 'TB' | 'LR',
+  isFlowchart: boolean,
+  type: RelationType,
+  flowKind: FlowTransitionKind | undefined,
+  handleInput?: HandleResolutionInput,
+  arrowDirection: ArrowDirection = 'forward',
+  isFreeform = false
+): Record<RelationId, VisualModel['edges'][string]> {
+  const smartHandles = computeSmartEdgeHandles(semantic, nodes, direction);
+  const labelOffsets = computeEdgeLabelOffsets(semantic);
+  const { sourceHandle, targetHandle, manualHandles } = resolveEdgeHandles(
+    undefined,
+    handleInput,
+    smartHandles[relationId],
+    isFreeform
+  );
+
+  const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
+    ...edges,
+    [relationId]: {
+      relationId,
+      curveType: getDefaultCurveType(isFlowchart, type),
+      sourceHandle,
+      targetHandle,
+      manualHandles,
+      arrowDirection,
+      labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
+      ...(flowKind ? { flowKind } : {}),
+    },
+  };
+
+  applySiblingLabelOffsets(updatedEdges, semantic, sourceId, labelOffsets);
+  return updatedEdges;
+}
+
+interface StoreMutation {
+  semantic?: SemanticModel;
+  visual?: VisualModel;
+  metrics?: SemanticGraphMetrics;
+  recomputeMetrics?: boolean;
+  selectedNodeIds?: ConceptId[];
+  selectedEdgeIds?: RelationId[];
+  isLayoutRunning?: boolean;
+}
+
+function commitMutation(
+  state: ConceptMapState,
+  set: (partial: Partial<ConceptMapState>) => void,
+  mutation: StoreMutation
+): string {
+  const semantic = mutation.semantic ?? state.semantic;
+  const visual = mutation.visual ?? state.visual;
+  const metrics =
+    mutation.metrics ??
+    (mutation.recomputeMetrics ? computeSemanticGraphMetrics(semantic) : state.metrics);
+
+  const savedAt = persistDraftSnapshot(
+    semantic,
+    visual,
+    state.sourceFileName,
+    state.diagnostics
+  );
+
+  const update: Partial<ConceptMapState> = {
+    visual,
+    hasUnsavedChanges: true,
+    lastSavedAt: savedAt,
+  };
+
+  if (mutation.semantic !== undefined) update.semantic = semantic;
+  if (mutation.metrics !== undefined || mutation.recomputeMetrics) update.metrics = metrics;
+  if (mutation.selectedNodeIds !== undefined) update.selectedNodeIds = mutation.selectedNodeIds;
+  if (mutation.selectedEdgeIds !== undefined) update.selectedEdgeIds = mutation.selectedEdgeIds;
+  if (mutation.isLayoutRunning !== undefined) update.isLayoutRunning = mutation.isLayoutRunning;
+
+  set(update);
+  return savedAt;
 }
 
 export const useConceptMapStore = create<ConceptMapState>()(
@@ -286,87 +640,43 @@ export const useConceptMapStore = create<ConceptMapState>()(
 
       setDiagramMode: (mode: DiagramMode) => {
         const state = get();
-        if (state.semantic.diagramMode === mode) {
-          return;
-        }
+        if (state.semantic.diagramMode === mode) return;
 
         const isFlowchart = mode === 'flowchart';
-        const nextSemantic: SemanticModel = {
-          ...state.semantic,
-          diagramMode: mode,
-        };
-
-        const smartHandles = computeSmartEdgeHandles(
-          nextSemantic,
-          state.visual.nodes,
-          state.visual.layoutSettings.direction
-        );
-
+        const nextSemantic: SemanticModel = { ...state.semantic, diagramMode: mode };
+        const smartHandles = computeSmartEdgeHandles(nextSemantic, state.visual.nodes, state.visual.layoutSettings.direction);
         const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
         const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {};
+
         for (const [rId, edge] of Object.entries(state.visual.edges)) {
           const rel = nextSemantic.relations[rId];
-          const defaultCurve: EdgeCurveType = isFlowchart
-            ? 'smoothstep'
-            : (rel?.type === 'hierarchical' ? 'smoothstep' : 'bezier');
-
-          const preserveHandles =
-            Boolean(edge.manualHandles) ||
-            Boolean(rel?.manualHandles) ||
-            isFreeform;
+          const preserve = Boolean(edge.manualHandles || rel?.manualHandles || isFreeform);
           const smart = smartHandles[rId];
           updatedEdges[rId] = {
             ...edge,
-            curveType: defaultCurve,
-            sourceHandle: preserveHandles
-              ? edge.sourceHandle
-              : (smart?.sourceHandle ?? edge.sourceHandle),
-            targetHandle: preserveHandles
-              ? edge.targetHandle
-              : (smart?.targetHandle ?? edge.targetHandle),
+            curveType: getDefaultCurveType(isFlowchart, rel?.type),
+            sourceHandle: preserve ? edge.sourceHandle : (smart?.sourceHandle ?? edge.sourceHandle),
+            targetHandle: preserve ? edge.targetHandle : (smart?.targetHandle ?? edge.targetHandle),
           };
         }
 
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          edges: updatedEdges,
-          layoutSettings: {
-            ...state.visual.layoutSettings,
-            algorithm:
-              isFlowchart && state.visual.layoutSettings.algorithm === 'novak-backbone'
-                ? 'dagre-hierarchical'
-                : state.visual.layoutSettings.algorithm,
-          },
-        };
-
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
-          visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          visual: {
+            ...state.visual,
+            edges: updatedEdges,
+            layoutSettings: {
+              ...state.visual.layoutSettings,
+              algorithm: isFlowchart && state.visual.layoutSettings.algorithm === 'novak-backbone' ? 'dagre-hierarchical' : state.visual.layoutSettings.algorithm,
+            },
+          },
+          recomputeMetrics: true,
         });
       },
 
       setFreeformCanvas: (enabled: boolean) => {
-        const state = get();
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          layoutSettings: {
-            ...state.visual.layoutSettings,
-            freeformCanvas: enabled,
-          },
-        };
         set({
-          visual: nextVisual,
+          visual: { ...get().visual, layoutSettings: { ...get().visual.layoutSettings, freeformCanvas: enabled } },
           hasUnsavedChanges: true,
         });
       },
@@ -379,233 +689,39 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const isFlowchart = mode === 'flowchart';
         const defaultTitle = isFlowchart ? 'Novo Fluxograma' : 'Novo Mapa Conceitual';
         const defaultFileName = isFlowchart ? 'novo-fluxograma.md' : 'novo-mapa.md';
+        const starter = withStarterConcept ? createStarterMap(mode) : null;
 
-        let nextSemantic: SemanticModel = {
+        const nextSemantic: SemanticModel = {
           ...EMPTY_SEMANTIC,
           diagramMode: mode,
           title: defaultTitle,
+          ...(starter?.semantic ?? {}),
         };
 
-        let nextVisual: VisualModel = {
+        const nextVisual: VisualModel = {
           ...EMPTY_VISUAL,
           layoutSettings: {
             ...get().visual.layoutSettings,
             algorithm: isFlowchart ? 'dagre-hierarchical' : get().visual.layoutSettings.algorithm,
             freeformCanvas: options?.freeformCanvas ?? false,
           },
+          ...(starter?.visual ?? {}),
         };
 
-        let initialSelectedNodes: ConceptId[] = [];
-
-        if (withStarterConcept) {
-          if (!isFlowchart) {
-            const starterLabel = 'Conceito Principal';
-            const starterId = generateUniqueConceptId(starterLabel, {});
-            const starterDims = estimateConceptNodeDimensions(starterLabel);
-
-            nextSemantic = {
-              ...nextSemantic,
-              concepts: {
-                [starterId]: {
-                  id: starterId,
-                  label: starterLabel,
-                  normalizedKey: normalizeConceptKey(starterLabel),
-                  nodeShape: 'concept',
-                  sourceMeta: { createdManually: true },
-                },
-              },
-              conceptOrder: [starterId],
-            };
-
-            nextVisual = {
-              ...nextVisual,
-              nodes: {
-                [starterId]: {
-                  conceptId: starterId,
-                  position: { x: 400, y: 120 },
-                  dimensions: starterDims,
-                  pinned: false,
-                  customSize: false,
-                  computedLayer: 0,
-                  nodeShape: 'concept',
-                },
-              },
-            };
-            initialSelectedNodes = [starterId];
-          } else {
-            const inicioId = 'concept-inicio';
-            const processoId = 'concept-processo';
-            const decisaoId = 'concept-decisao';
-            const fimId = 'concept-fim';
-
-            const inicioDims = estimateConceptNodeDimensions('Início', undefined, false, 'terminal');
-            const processoDims = estimateConceptNodeDimensions('Processo', undefined, false, 'process');
-            const decisaoDims = estimateConceptNodeDimensions('Decisão', undefined, false, 'decision');
-            const fimDims = estimateConceptNodeDimensions('Fim', undefined, false, 'terminal');
-
-            nextSemantic = {
-              ...nextSemantic,
-              concepts: {
-                [inicioId]: {
-                  id: inicioId,
-                  label: 'Início',
-                  normalizedKey: normalizeConceptKey('Início'),
-                  nodeShape: 'terminal',
-                  sourceMeta: { createdManually: true },
-                },
-                [processoId]: {
-                  id: processoId,
-                  label: 'Processo',
-                  normalizedKey: normalizeConceptKey('Processo'),
-                  nodeShape: 'process',
-                  sourceMeta: { createdManually: true },
-                },
-                [decisaoId]: {
-                  id: decisaoId,
-                  label: 'Decisão',
-                  normalizedKey: normalizeConceptKey('Decisão'),
-                  nodeShape: 'decision',
-                  sourceMeta: { createdManually: true },
-                },
-                [fimId]: {
-                  id: fimId,
-                  label: 'Fim',
-                  normalizedKey: normalizeConceptKey('Fim'),
-                  nodeShape: 'terminal',
-                  sourceMeta: { createdManually: true },
-                },
-              },
-              conceptOrder: [inicioId, processoId, decisaoId, fimId],
-              relations: {
-                'rel-1': {
-                  id: 'rel-1',
-                  orderIndex: 1,
-                  sourceId: inicioId,
-                  linkingPhrase: '',
-                  targetId: processoId,
-                  type: 'sequence',
-                  flowKind: 'sequence',
-                  rawType: 'sequencial',
-                  sourceMeta: { createdManually: true },
-                },
-                'rel-2': {
-                  id: 'rel-2',
-                  orderIndex: 2,
-                  sourceId: processoId,
-                  linkingPhrase: '',
-                  targetId: decisaoId,
-                  type: 'sequence',
-                  flowKind: 'sequence',
-                  rawType: 'sequencial',
-                  sourceMeta: { createdManually: true },
-                },
-                'rel-3': {
-                  id: 'rel-3',
-                  orderIndex: 3,
-                  sourceId: decisaoId,
-                  linkingPhrase: 'Sim',
-                  targetId: fimId,
-                  type: 'conditional',
-                  flowKind: 'conditional',
-                  rawType: 'condicional',
-                  sourceMeta: { createdManually: true },
-                },
-              },
-              relationOrder: ['rel-1', 'rel-2', 'rel-3'],
-            };
-
-            nextVisual = {
-              ...nextVisual,
-              nodes: {
-                [inicioId]: {
-                  conceptId: inicioId,
-                  position: { x: 400, y: 60 },
-                  dimensions: inicioDims,
-                  pinned: false,
-                  customSize: false,
-                  computedLayer: 0,
-                  nodeShape: 'terminal',
-                },
-                [processoId]: {
-                  conceptId: processoId,
-                  position: { x: 400, y: 180 },
-                  dimensions: processoDims,
-                  pinned: false,
-                  customSize: false,
-                  computedLayer: 1,
-                  nodeShape: 'process',
-                },
-                [decisaoId]: {
-                  conceptId: decisaoId,
-                  position: { x: 400, y: 310 },
-                  dimensions: decisaoDims,
-                  pinned: false,
-                  customSize: false,
-                  computedLayer: 2,
-                  nodeShape: 'decision',
-                },
-                [fimId]: {
-                  conceptId: fimId,
-                  position: { x: 400, y: 470 },
-                  dimensions: fimDims,
-                  pinned: false,
-                  customSize: false,
-                  computedLayer: 3,
-                  nodeShape: 'terminal',
-                },
-              },
-              edges: {
-                'rel-1': {
-                  relationId: 'rel-1',
-                  curveType: 'smoothstep',
-                  sourceHandle: 'bottom',
-                  targetHandle: 'top',
-                  labelOffset: { t: 0.5 },
-                  flowKind: 'sequence',
-                },
-                'rel-2': {
-                  relationId: 'rel-2',
-                  curveType: 'smoothstep',
-                  sourceHandle: 'bottom',
-                  targetHandle: 'top',
-                  labelOffset: { t: 0.5 },
-                  flowKind: 'sequence',
-                },
-                'rel-3': {
-                  relationId: 'rel-3',
-                  curveType: 'smoothstep',
-                  sourceHandle: 'bottom',
-                  targetHandle: 'top',
-                  labelOffset: { t: 0.5 },
-                  flowKind: 'conditional',
-                },
-              },
-            };
-            initialSelectedNodes = [inicioId];
-          }
-        }
-
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt =
-          nextSemantic.conceptOrder.length > 0
-            ? persistDraftSnapshot(
-                nextSemantic,
-                nextVisual,
-                defaultFileName,
-                []
-              )
-            : new Date().toISOString();
+        const savedAt = nextSemantic.conceptOrder.length > 0
+          ? persistDraftSnapshot(nextSemantic, nextVisual, defaultFileName, [])
+          : new Date().toISOString();
 
         set({
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
+          metrics: computeSemanticGraphMetrics(nextSemantic),
           diagnostics: [],
           sourceFileName: defaultFileName,
           hasUnsavedChanges: false,
           lastSavedAt: savedAt,
           isLayoutRunning: false,
-          selectedNodeIds: initialSelectedNodes,
+          selectedNodeIds: starter ? starter.selectedNodes : [],
           selectedEdgeIds: [],
           hoveredNodeId: null,
           searchQuery: '',
@@ -618,23 +734,14 @@ export const useConceptMapStore = create<ConceptMapState>()(
         set({ isLayoutRunning: true });
         const parsed = parseConceptMapMarkdown(markdownContent);
         const hasFreeformDirective =
-          /^---[\s\S]*?\n\s*(?:freeform|freeformCanvas|canvas-livre)\s*:\s*true\b[\s\S]*?\n---/im.test(
-            markdownContent
-          ) || /canvas-livre|freeform/i.test(fileName);
+          /^---[\s\S]*?\n\s*(?:freeform|freeformCanvas|canvas-livre)\s*:\s*true\b[\s\S]*?\n---/im.test(markdownContent) ||
+          /canvas-livre|freeform/i.test(fileName);
         const layoutSettings: LayoutSettings = {
           ...DEFAULT_LAYOUT_SETTINGS,
-          algorithm:
-            parsed.semantic.diagramMode === 'flowchart'
-              ? 'dagre-hierarchical'
-              : DEFAULT_LAYOUT_SETTINGS.algorithm,
+          algorithm: parsed.semantic.diagramMode === 'flowchart' ? 'dagre-hierarchical' : DEFAULT_LAYOUT_SETTINGS.algorithm,
           freeformCanvas: hasFreeformDirective,
         };
-        const layoutResult = await computeConceptMapLayout(
-          parsed.semantic,
-          undefined,
-          layoutSettings
-        );
-
+        const layoutResult = await computeConceptMapLayout(parsed.semantic, undefined, layoutSettings);
         const nextVisual: VisualModel = {
           nodes: layoutResult.nodes,
           edges: layoutResult.edges,
@@ -642,13 +749,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
           layoutSettings,
           crossLinkVisibility: 'all',
         };
-
-        const savedAt = persistDraftSnapshot(
-          parsed.semantic,
-          nextVisual,
-          fileName,
-          parsed.diagnostics
-        );
+        const savedAt = persistDraftSnapshot(parsed.semantic, nextVisual, fileName, parsed.diagnostics);
 
         set({
           semantic: parsed.semantic,
@@ -662,32 +763,24 @@ export const useConceptMapStore = create<ConceptMapState>()(
           selectedNodeIds: [],
           selectedEdgeIds: [],
         });
-
-        // Limpa histórico de Undo anterior ao carregar um novo arquivo base
         useConceptMapStore.temporal.getState().clear();
       },
 
       loadFromDocument: (doc: ConceptMapDocument) => {
-        const metrics = computeSemanticGraphMetrics(doc.semantic);
-        const savedAt = persistDraftSnapshot(
-          doc.semantic,
-          doc.visual,
-          doc.metadata.sourceFileName ?? 'mapa-salvo.cmap.json',
-          doc.parseDiagnostics ?? []
-        );
-
+        const fileName = doc.metadata.sourceFileName ?? 'mapa-salvo.cmap.json';
+        const diagnostics = doc.parseDiagnostics ?? [];
+        const savedAt = persistDraftSnapshot(doc.semantic, doc.visual, fileName, diagnostics);
         set({
           semantic: doc.semantic,
           visual: doc.visual,
-          metrics,
-          diagnostics: doc.parseDiagnostics ?? [],
-          sourceFileName: doc.metadata.sourceFileName ?? 'mapa-salvo.cmap.json',
+          metrics: computeSemanticGraphMetrics(doc.semantic),
+          diagnostics,
+          sourceFileName: fileName,
           hasUnsavedChanges: false,
           lastSavedAt: savedAt,
           selectedNodeIds: [],
           selectedEdgeIds: [],
         });
-
         useConceptMapStore.temporal.getState().clear();
       },
 
@@ -711,30 +804,17 @@ export const useConceptMapStore = create<ConceptMapState>()(
       },
 
       saveDraftToLocalStorage: () => {
-        const state = get();
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          state.visual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-        set({ lastSavedAt: savedAt });
+        const { semantic, visual, sourceFileName, diagnostics } = get();
+        set({ lastSavedAt: persistDraftSnapshot(semantic, visual, sourceFileName, diagnostics, true) });
       },
 
       restoreDraftFromLocalStorage: (): boolean => {
         try {
-          const storage = getLocalStorage();
-          if (!storage) {
-            return false;
-          }
-          const raw = storage.getItem(AUTOSAVE_STORAGE_KEY);
+          flushDraftSnapshot();
+          const raw = getLocalStorage()?.getItem(AUTOSAVE_STORAGE_KEY);
           if (!raw) return false;
-
           const doc = JSON.parse(raw) as ConceptMapDocument;
-          if (!doc?.semantic?.concepts || !doc?.visual?.nodes) {
-            return false;
-          }
-
+          if (!doc?.semantic?.concepts || !doc?.visual?.nodes) return false;
           get().loadFromDocument(doc);
           return true;
         } catch {
@@ -743,14 +823,8 @@ export const useConceptMapStore = create<ConceptMapState>()(
       },
 
       markSaved: () => {
-        const state = get();
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          state.visual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-        set({ hasUnsavedChanges: false, lastSavedAt: savedAt });
+        const { semantic, visual, sourceFileName, diagnostics } = get();
+        set({ hasUnsavedChanges: false, lastSavedAt: persistDraftSnapshot(semantic, visual, sourceFileName, diagnostics, true) });
       },
 
       addConcept: (
@@ -775,53 +849,23 @@ export const useConceptMapStore = create<ConceptMapState>()(
           y: Math.round(180 + (state.semantic.conceptOrder.length % 5) * 50),
         };
 
-        const nextSemantic: SemanticModel = {
-          ...state.semantic,
-          concepts: {
-            ...state.semantic.concepts,
-            [id]: {
-              id,
-              label: cleanLabel,
-              normalizedKey: normalizeConceptKey(cleanLabel),
-              nodeShape: actualShape,
-              sourceMeta: {
-                createdManually: true,
-              },
+        commitMutation(state, set, {
+          semantic: {
+            ...state.semantic,
+            concepts: {
+              ...state.semantic.concepts,
+              [id]: { id, label: cleanLabel, normalizedKey: normalizeConceptKey(cleanLabel), nodeShape: actualShape, sourceMeta: { createdManually: true } },
+            },
+            conceptOrder: [...state.semantic.conceptOrder, id],
+          },
+          visual: {
+            ...state.visual,
+            nodes: {
+              ...state.visual.nodes,
+              [id]: { conceptId: id, position: targetPos, dimensions, pinned: false, customSize: false, computedLayer: 0, nodeShape: actualShape },
             },
           },
-          conceptOrder: [...state.semantic.conceptOrder, id],
-        };
-
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: {
-            ...state.visual.nodes,
-            [id]: {
-              conceptId: id,
-              position: targetPos,
-              dimensions,
-              pinned: false,
-              customSize: false,
-              computedLayer: 0,
-              nodeShape: actualShape,
-            },
-          },
-        };
-
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          semantic: nextSemantic,
-          visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          recomputeMetrics: true,
           selectedNodeIds: [id],
           selectedEdgeIds: [],
         });
@@ -870,43 +914,20 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const spreadOffset =
           outgoingCount === 0
             ? 0
-            : (outgoingCount % 2 === 1 ? 1 : -1) *
-              Math.ceil(outgoingCount / 2) *
-              (isHorizontal ? 100 : 210);
+            : (outgoingCount % 2 === 1 ? 1 : -1) * Math.ceil(outgoingCount / 2) * (isHorizontal ? 100 : 210);
 
         const targetPos: Point2D = position
           ? { x: Math.round(position.x), y: Math.round(position.y) }
-          : isHorizontal
-            ? {
-                x: Math.round(sourceNodeVis.position.x + 260),
-                y: Math.round(sourceNodeVis.position.y + spreadOffset),
-              }
-            : {
-                x: Math.round(sourceNodeVis.position.x + spreadOffset),
-                y: Math.round(sourceNodeVis.position.y + 150),
-              };
+          : {
+              x: Math.round(sourceNodeVis.position.x + (isHorizontal ? 260 : spreadOffset)),
+              y: Math.round(sourceNodeVis.position.y + (isHorizontal ? spreadOffset : 150)),
+            };
 
         const relationId = generateUniqueRelationId(state.semantic.relations);
         const orderIndex = state.semantic.relationOrder.length + 1;
 
-        const flowKind: FlowTransitionKind | undefined = isFlowchart
-          ? actualType === 'conditional'
-            ? 'conditional'
-            : actualType === 'loop-back'
-              ? 'loop-back'
-              : 'sequence'
-          : undefined;
-
-        const rawType =
-          actualType === 'sequence'
-            ? 'sequencial'
-            : actualType === 'conditional'
-              ? 'condicional'
-              : actualType === 'loop-back'
-                ? 'retorno'
-                : actualType === 'hierarchical'
-                  ? 'hierárquica'
-                  : 'ligação cruzada';
+        const flowKind = getFlowKind(actualType, isFlowchart);
+        const rawType = getRelationRawType(actualType);
 
         const nextSemantic: SemanticModel = {
           ...state.semantic,
@@ -951,42 +972,20 @@ export const useConceptMapStore = create<ConceptMapState>()(
           },
         };
 
-        const smartHandles = computeSmartEdgeHandles(
+        const updatedEdges = createVisualEdgeRecord(
+          relationId,
+          sourceId,
           nextSemantic,
           nextNodes,
-          state.visual.layoutSettings.direction
+          state.visual.edges,
+          state.visual.layoutSettings.direction,
+          isFlowchart,
+          actualType,
+          flowKind,
+          undefined,
+          'forward',
+          Boolean(state.visual.layoutSettings.freeformCanvas)
         );
-        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
-
-        const defaultCurve: EdgeCurveType = isFlowchart
-          ? 'smoothstep'
-          : (actualType === 'hierarchical' ? 'smoothstep' : 'bezier');
-
-        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
-          ...state.visual.edges,
-          [relationId]: {
-            relationId,
-            curveType: defaultCurve,
-            sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
-            targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
-            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
-            flowKind,
-          },
-        };
-
-        // Atualiza também o escalonamento das arestas irmãs que saem do mesmo sourceId
-        for (const rId of nextSemantic.relationOrder) {
-          if (
-            nextSemantic.relations[rId]?.sourceId === sourceId &&
-            updatedEdges[rId] &&
-            labelOffsets[rId]
-          ) {
-            updatedEdges[rId] = {
-              ...updatedEdges[rId],
-              labelOffset: labelOffsets[rId],
-            };
-          }
-        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
@@ -994,20 +993,10 @@ export const useConceptMapStore = create<ConceptMapState>()(
           edges: updatedEdges,
         };
 
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          recomputeMetrics: true,
           selectedNodeIds: [newConceptId],
           selectedEdgeIds: [],
         });
@@ -1039,134 +1028,51 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const nextConceptOrder = [...state.semantic.conceptOrder];
         const nextNodes = { ...state.visual.nodes };
 
-        const findConceptByNormalizedKey = (key: string): ConceptId | undefined =>
-          Object.values(nextConcepts).find((c) => c.normalizedKey === key)?.id;
-
-        const sourceKey = normalizeConceptKey(cleanSource);
-        let sourceId = findConceptByNormalizedKey(sourceKey);
         const effectiveSourceShape: FlowchartNodeShape | undefined =
           sourceShape ??
           extractedSource.shape ??
           (isFlowchart ? 'process' : undefined);
 
-        if (!sourceId) {
-          sourceId = generateUniqueConceptId(cleanSource, nextConcepts);
-          const dims = estimateConceptNodeDimensions(
-            cleanSource,
-            undefined,
-            false,
-            effectiveSourceShape
-          );
-          const idx = nextConceptOrder.length;
-          nextConcepts[sourceId] = {
-            id: sourceId,
-            label: cleanSource,
-            normalizedKey: sourceKey,
-            nodeShape: effectiveSourceShape,
-            sourceMeta: {
-              createdManually: true,
-              ...(extractedSource.rawShapeTag ? { rawShapeTag: extractedSource.rawShapeTag } : {}),
-            },
-          };
-          nextConceptOrder.push(sourceId);
-          nextNodes[sourceId] = {
-            conceptId: sourceId,
-            position: {
+        const sourceId = resolveOrCreateConceptNode(
+          cleanSource,
+          effectiveSourceShape,
+          extractedSource.rawShapeTag,
+          nextConcepts,
+          nextConceptOrder,
+          nextNodes,
+          () => {
+            const idx = nextConceptOrder.length;
+            return {
               x: Math.round(320 + (idx % 4) * 220),
               y: Math.round(120 + Math.floor(idx / 4) * 150),
-            },
-            dimensions: dims,
-            pinned: false,
-            customSize: false,
-            computedLayer: 0,
-            nodeShape: effectiveSourceShape,
-          };
-        } else if (effectiveSourceShape && !nextConcepts[sourceId]?.nodeShape) {
-          nextConcepts[sourceId] = {
-            ...nextConcepts[sourceId],
-            nodeShape: effectiveSourceShape,
-          };
-          if (nextNodes[sourceId]) {
-            nextNodes[sourceId] = {
-              ...nextNodes[sourceId],
-              nodeShape: effectiveSourceShape,
-              dimensions: estimateConceptNodeDimensions(
-                cleanSource,
-                nextNodes[sourceId].dimensions,
-                nextNodes[sourceId].customSize,
-                effectiveSourceShape
-              ),
             };
-          }
-        }
+          },
+          0
+        );
 
-        const targetKey = normalizeConceptKey(cleanTarget);
-        let targetId = findConceptByNormalizedKey(targetKey);
         const effectiveTargetShape: FlowchartNodeShape | undefined =
           targetShape ??
           extractedTarget.shape ??
           (isFlowchart ? 'process' : undefined);
 
-        if (!targetId) {
-          targetId = generateUniqueConceptId(cleanTarget, nextConcepts);
-          const dims = estimateConceptNodeDimensions(
-            cleanTarget,
-            undefined,
-            false,
-            effectiveTargetShape
-          );
-          const srcNode = nextNodes[sourceId];
-          const outgoingCount = state.semantic.relationOrder.filter(
-            (rId) => state.semantic.relations[rId]?.sourceId === sourceId
-          ).length;
-          const spreadX =
-            outgoingCount === 0
-              ? 0
-              : (outgoingCount % 2 === 1 ? 1 : -1) *
-                Math.ceil(outgoingCount / 2) *
-                210;
-
-          nextConcepts[targetId] = {
-            id: targetId,
-            label: cleanTarget,
-            normalizedKey: targetKey,
-            nodeShape: effectiveTargetShape,
-            sourceMeta: {
-              createdManually: true,
-              ...(extractedTarget.rawShapeTag ? { rawShapeTag: extractedTarget.rawShapeTag } : {}),
-            },
-          };
-          nextConceptOrder.push(targetId);
-          nextNodes[targetId] = {
-            conceptId: targetId,
-            position: {
+        const srcNode = nextNodes[sourceId];
+        const targetId = resolveOrCreateConceptNode(
+          cleanTarget,
+          effectiveTargetShape,
+          extractedTarget.rawShapeTag,
+          nextConcepts,
+          nextConceptOrder,
+          nextNodes,
+          () => {
+            const count = state.semantic.relationOrder.filter((rId) => state.semantic.relations[rId]?.sourceId === sourceId).length;
+            const spreadX = count === 0 ? 0 : (count % 2 === 1 ? 1 : -1) * Math.ceil(count / 2) * 210;
+            return {
               x: Math.round((srcNode?.position.x ?? 320) + spreadX),
               y: Math.round((srcNode?.position.y ?? 120) + 150),
-            },
-            dimensions: dims,
-            pinned: false,
-            customSize: false,
-            computedLayer: (srcNode?.computedLayer ?? 0) + 1,
-            nodeShape: effectiveTargetShape,
-          };
-        } else if (effectiveTargetShape && !nextConcepts[targetId]?.nodeShape) {
-          nextConcepts[targetId] = {
-            ...nextConcepts[targetId],
-            nodeShape: effectiveTargetShape,
-          };
-          if (nextNodes[targetId]) {
-            nextNodes[targetId] = {
-              ...nextNodes[targetId],
-              nodeShape: effectiveTargetShape,
-              dimensions: estimateConceptNodeDimensions(
-                cleanTarget,
-                nextNodes[targetId].dimensions,
-                nextNodes[targetId].customSize,
-                effectiveTargetShape
-              ),
             };
-          }
-        }
+          },
+          (srcNode?.computedLayer ?? 0) + 1
+        );
 
         const relationId = generateUniqueRelationId(state.semantic.relations);
         const orderIndex = state.semantic.relationOrder.length + 1;
@@ -1191,40 +1097,17 @@ export const useConceptMapStore = create<ConceptMapState>()(
           relationOrder: [...state.semantic.relationOrder, relationId],
         };
 
-        const smartHandles = computeSmartEdgeHandles(
+        const updatedEdges = createVisualEdgeRecord(
+          relationId,
+          sourceId,
           nextSemantic,
           nextNodes,
-          state.visual.layoutSettings.direction
+          state.visual.edges,
+          state.visual.layoutSettings.direction,
+          isFlowchart,
+          type,
+          undefined
         );
-        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
-
-        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
-          ...state.visual.edges,
-          [relationId]: {
-            relationId,
-            curveType: isFlowchart
-              ? 'smoothstep'
-              : type === 'hierarchical'
-              ? 'smoothstep'
-              : 'bezier',
-            sourceHandle: smartHandles[relationId]?.sourceHandle ?? 'bottom',
-            targetHandle: smartHandles[relationId]?.targetHandle ?? 'top',
-            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
-          },
-        };
-
-        for (const rId of nextSemantic.relationOrder) {
-          if (
-            nextSemantic.relations[rId]?.sourceId === sourceId &&
-            updatedEdges[rId] &&
-            labelOffsets[rId]
-          ) {
-            updatedEdges[rId] = {
-              ...updatedEdges[rId],
-              labelOffset: labelOffsets[rId],
-            };
-          }
-        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
@@ -1232,20 +1115,10 @@ export const useConceptMapStore = create<ConceptMapState>()(
           edges: updatedEdges,
         };
 
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          recomputeMetrics: true,
           selectedNodeIds: [targetId],
           selectedEdgeIds: [],
         });
@@ -1258,21 +1131,7 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const existing = state.semantic.concepts[conceptId];
         // Preserva espaços digitados entre palavras nos campos controlados (sem dar trim a cada tecla)
         const sanitizedLabel = newLabel.replace(/\r?\n/g, ' ');
-        if (!existing || !sanitizedLabel.trim() || existing.label === sanitizedLabel) {
-          return;
-        }
-
-        const nextSemantic: SemanticModel = {
-          ...state.semantic,
-          concepts: {
-            ...state.semantic.concepts,
-            [conceptId]: {
-              ...existing,
-              label: sanitizedLabel,
-              normalizedKey: normalizeConceptKey(sanitizedLabel),
-            },
-          },
-        };
+        if (!existing || !sanitizedLabel.trim() || existing.label === sanitizedLabel) return;
 
         const prevNodeVisual = state.visual.nodes[conceptId];
         const nextDimensions = estimateConceptNodeDimensions(
@@ -1282,29 +1141,21 @@ export const useConceptMapStore = create<ConceptMapState>()(
           existing.nodeShape ?? prevNodeVisual?.nodeShape
         );
 
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: {
-            ...state.visual.nodes,
-            [conceptId]: {
-              ...prevNodeVisual,
-              dimensions: nextDimensions,
+        commitMutation(state, set, {
+          semantic: {
+            ...state.semantic,
+            concepts: {
+              ...state.semantic.concepts,
+              [conceptId]: { ...existing, label: sanitizedLabel, normalizedKey: normalizeConceptKey(sanitizedLabel) },
             },
           },
-        };
-
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          semantic: nextSemantic,
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          visual: {
+            ...state.visual,
+            nodes: {
+              ...state.visual.nodes,
+              [conceptId]: { ...prevNodeVisual, dimensions: nextDimensions },
+            },
+          },
         });
       },
 
@@ -1317,49 +1168,13 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const nodeVis = state.visual.nodes[conceptId];
         if (!concept || !nodeVis) return;
 
-        const nextSemantic: SemanticModel =
-          updates.notes !== undefined
-            ? {
-                ...state.semantic,
-                concepts: {
-                  ...state.semantic.concepts,
-                  [conceptId]: {
-                    ...concept,
-                    notes: updates.notes,
-                  },
-                },
-              }
-            : state.semantic;
-
-        const nextVisual: VisualModel =
-          updates.style !== undefined
-            ? {
-                ...state.visual,
-                nodes: {
-                  ...state.visual.nodes,
-                  [conceptId]: {
-                    ...nodeVis,
-                    style: {
-                      ...nodeVis.style,
-                      ...updates.style,
-                    },
-                  },
-                },
-              }
-            : state.visual;
-
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          semantic: nextSemantic,
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+        commitMutation(state, set, {
+          semantic: updates.notes !== undefined
+            ? { ...state.semantic, concepts: { ...state.semantic.concepts, [conceptId]: { ...concept, notes: updates.notes } } }
+            : state.semantic,
+          visual: updates.style !== undefined
+            ? { ...state.visual, nodes: { ...state.visual.nodes, [conceptId]: { ...nodeVis, style: { ...nodeVis.style, ...updates.style } } } }
+            : state.visual,
         });
       },
 
@@ -1399,51 +1214,24 @@ export const useConceptMapStore = create<ConceptMapState>()(
           },
         };
 
-        const smartHandles = computeSmartEdgeHandles(
+        const nextEdges = updateIncidentSmartHandles(
           nextSemantic,
           updatedNodes,
-          state.visual.layoutSettings.direction
+          state.visual.edges,
+          new Set([conceptId]),
+          state.visual.layoutSettings.direction,
+          Boolean(state.visual.layoutSettings.freeformCanvas)
         );
-
-        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
-        const updatedEdges = { ...state.visual.edges };
-        for (const relId of state.semantic.relationOrder) {
-          const rel = state.semantic.relations[relId];
-          if (rel && (rel.sourceId === conceptId || rel.targetId === conceptId)) {
-            const prevEdge = updatedEdges[relId];
-            const smart = smartHandles[relId];
-            if (prevEdge && smart) {
-              // PRESERVATION GUARANTEE: Never overwrite manual handles or freeform canvas edges
-              if (prevEdge.manualHandles || isFreeform) {
-                continue;
-              }
-              updatedEdges[relId] = {
-                ...prevEdge,
-                sourceHandle: smart.sourceHandle,
-                targetHandle: smart.targetHandle,
-              };
-            }
-          }
-        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: updatedNodes,
-          edges: updatedEdges,
+          edges: nextEdges,
         };
 
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
         });
       },
 
@@ -1451,110 +1239,37 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const state = get();
         const sourceConcept = state.semantic.concepts[nodeId];
         const sourceNodeVis = state.visual.nodes[nodeId];
-        if (!sourceConcept || !sourceNodeVis) {
-          return null;
-        }
+        if (!sourceConcept || !sourceNodeVis) return null;
 
         const isHorizontal = state.visual.layoutSettings.direction === 'LR';
-        const simLabel = 'Ação (Sim)';
-        const naoLabel = 'Ação (Não)';
+        const width = sourceNodeVis.dimensions?.width ?? 160;
+        const height = sourceNodeVis.dimensions?.height ?? 80;
 
-        const simConceptId = generateUniqueConceptId(simLabel, state.semantic.concepts);
-        const nextConceptsWithSim = {
+        const branchSpecs = [
+          {
+            phrase: 'Sim',
+            label: 'Ação (Sim)',
+            pos: isHorizontal
+              ? { x: Math.round(sourceNodeVis.position.x + width + 120), y: Math.round(sourceNodeVis.position.y) }
+              : { x: Math.round(sourceNodeVis.position.x), y: Math.round(sourceNodeVis.position.y + height + 130) },
+            handles: isHorizontal ? { src: 'right' as const, tgt: 'left' as const } : { src: 'bottom' as const, tgt: 'top' as const },
+            layer: (sourceNodeVis.computedLayer ?? 0) + 1,
+          },
+          {
+            phrase: 'Não',
+            label: 'Ação (Não)',
+            pos: isHorizontal
+              ? { x: Math.round(sourceNodeVis.position.x), y: Math.round(sourceNodeVis.position.y + height + 120) }
+              : { x: Math.round(sourceNodeVis.position.x + width + 110), y: Math.round(sourceNodeVis.position.y) },
+            handles: isHorizontal ? { src: 'bottom' as const, tgt: 'top' as const } : { src: 'right' as const, tgt: 'top' as const },
+            layer: sourceNodeVis.computedLayer ?? 0,
+          },
+        ];
+
+        const nextConcepts = {
           ...state.semantic.concepts,
-          [simConceptId]: {
-            id: simConceptId,
-            label: simLabel,
-            normalizedKey: normalizeConceptKey(simLabel),
-            nodeShape: 'process' as FlowchartNodeShape,
-            sourceMeta: { createdManually: true },
-          },
+          [nodeId]: { ...sourceConcept, nodeShape: 'decision' as FlowchartNodeShape },
         };
-
-        const naoConceptId = generateUniqueConceptId(naoLabel, nextConceptsWithSim);
-
-        const simDims = estimateConceptNodeDimensions(simLabel, undefined, false, 'process');
-        const naoDims = estimateConceptNodeDimensions(naoLabel, undefined, false, 'process');
-
-        const simPos: Point2D = isHorizontal
-          ? {
-              x: Math.round(sourceNodeVis.position.x + (sourceNodeVis.dimensions?.width ?? 160) + 120),
-              y: Math.round(sourceNodeVis.position.y),
-            }
-          : {
-              x: Math.round(sourceNodeVis.position.x),
-              y: Math.round(sourceNodeVis.position.y + (sourceNodeVis.dimensions?.height ?? 80) + 130),
-            };
-
-        const naoPos: Point2D = isHorizontal
-          ? {
-              x: Math.round(sourceNodeVis.position.x),
-              y: Math.round(sourceNodeVis.position.y + (sourceNodeVis.dimensions?.height ?? 80) + 120),
-            }
-          : {
-              x: Math.round(sourceNodeVis.position.x + (sourceNodeVis.dimensions?.width ?? 160) + 110),
-              y: Math.round(sourceNodeVis.position.y),
-            };
-
-        const simRelId = generateUniqueRelationId(state.semantic.relations);
-        const existingRelationsWithSim = {
-          ...state.semantic.relations,
-          [simRelId]: {
-            id: simRelId,
-            orderIndex: state.semantic.relationOrder.length + 1,
-            sourceId: nodeId,
-            linkingPhrase: 'Sim',
-            targetId: simConceptId,
-            type: 'conditional' as RelationType,
-            flowKind: 'conditional' as FlowTransitionKind,
-            rawType: 'condicional',
-            sourceMeta: { createdManually: true },
-          },
-        };
-        const naoRelId = generateUniqueRelationId(existingRelationsWithSim);
-
-        const nextSemantic: SemanticModel = {
-          ...state.semantic,
-          concepts: {
-            ...state.semantic.concepts,
-            [nodeId]: {
-              ...sourceConcept,
-              nodeShape: 'decision',
-            },
-            [simConceptId]: {
-              id: simConceptId,
-              label: simLabel,
-              normalizedKey: normalizeConceptKey(simLabel),
-              nodeShape: 'process',
-              sourceMeta: { createdManually: true },
-            },
-            [naoConceptId]: {
-              id: naoConceptId,
-              label: naoLabel,
-              normalizedKey: normalizeConceptKey(naoLabel),
-              nodeShape: 'process',
-              sourceMeta: { createdManually: true },
-            },
-          },
-          conceptOrder: [...state.semantic.conceptOrder, simConceptId, naoConceptId],
-          relations: {
-            ...state.semantic.relations,
-            [simRelId]: existingRelationsWithSim[simRelId],
-            [naoRelId]: {
-              id: naoRelId,
-              orderIndex: state.semantic.relationOrder.length + 2,
-              sourceId: nodeId,
-              linkingPhrase: 'Não',
-              targetId: naoConceptId,
-              type: 'conditional',
-              flowKind: 'conditional',
-              rawType: 'condicional',
-              sourceMeta: { createdManually: true },
-            },
-          },
-          relationOrder: [...state.semantic.relationOrder, simRelId, naoRelId],
-        };
-
         const nextNodes: Record<ConceptId, ConceptNodeVisual> = {
           ...state.visual.nodes,
           [nodeId]: {
@@ -1563,82 +1278,88 @@ export const useConceptMapStore = create<ConceptMapState>()(
             dimensions:
               sourceNodeVis.nodeShape === 'decision'
                 ? sourceNodeVis.dimensions
-                : estimateConceptNodeDimensions(
-                    sourceConcept.label,
-                    sourceNodeVis.dimensions,
-                    false,
-                    'decision'
-                  ),
-          },
-          [simConceptId]: {
-            conceptId: simConceptId,
-            position: simPos,
-            dimensions: simDims,
-            pinned: false,
-            customSize: false,
-            computedLayer: (sourceNodeVis.computedLayer ?? 0) + 1,
-            nodeShape: 'process',
-          },
-          [naoConceptId]: {
-            conceptId: naoConceptId,
-            position: naoPos,
-            dimensions: naoDims,
-            pinned: false,
-            customSize: false,
-            computedLayer: sourceNodeVis.computedLayer ?? 0,
-            nodeShape: 'process',
+                : estimateConceptNodeDimensions(sourceConcept.label, sourceNodeVis.dimensions, false, 'decision'),
           },
         };
+        const nextConceptOrder = [...state.semantic.conceptOrder];
+        const nextRelations = { ...state.semantic.relations };
+        const nextRelationOrder = [...state.semantic.relationOrder];
+        const nextEdges = { ...state.visual.edges };
 
-        const nextEdges: Record<RelationId, VisualModel['edges'][string]> = {
-          ...state.visual.edges,
-          [simRelId]: {
-            relationId: simRelId,
+        const createdIds: ConceptId[] = [];
+        const createdRelIds: RelationId[] = [];
+
+        for (const branch of branchSpecs) {
+          const cId = generateUniqueConceptId(branch.label, nextConcepts);
+          createdIds.push(cId);
+          nextConcepts[cId] = {
+            id: cId,
+            label: branch.label,
+            normalizedKey: normalizeConceptKey(branch.label),
+            nodeShape: 'process',
+            sourceMeta: { createdManually: true },
+          };
+          nextConceptOrder.push(cId);
+          nextNodes[cId] = {
+            conceptId: cId,
+            position: branch.pos,
+            dimensions: estimateConceptNodeDimensions(branch.label, undefined, false, 'process'),
+            pinned: false,
+            customSize: false,
+            computedLayer: branch.layer,
+            nodeShape: 'process',
+          };
+
+          const rId = generateUniqueRelationId(nextRelations);
+          createdRelIds.push(rId);
+          nextRelations[rId] = {
+            id: rId,
+            orderIndex: nextRelationOrder.length + 1,
+            sourceId: nodeId,
+            linkingPhrase: branch.phrase,
+            targetId: cId,
+            type: 'conditional',
+            flowKind: 'conditional',
+            rawType: 'condicional',
+            sourceMeta: { createdManually: true },
+          };
+          nextRelationOrder.push(rId);
+          nextEdges[rId] = {
+            relationId: rId,
             curveType: 'smoothstep',
-            sourceHandle: isHorizontal ? 'right' : 'bottom',
-            targetHandle: isHorizontal ? 'left' : 'top',
+            sourceHandle: branch.handles.src,
+            targetHandle: branch.handles.tgt,
             labelOffset: { t: 0.5 },
             flowKind: 'conditional',
-          },
-          [naoRelId]: {
-            relationId: naoRelId,
-            curveType: 'smoothstep',
-            sourceHandle: isHorizontal ? 'bottom' : 'right',
-            targetHandle: isHorizontal ? 'top' : 'top',
-            labelOffset: { t: 0.5 },
-            flowKind: 'conditional',
-          },
+          };
+        }
+
+        const nextSemantic: SemanticModel = {
+          ...state.semantic,
+          concepts: nextConcepts,
+          conceptOrder: nextConceptOrder,
+          relations: nextRelations,
+          relationOrder: nextRelationOrder,
         };
-
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: nextNodes,
           edges: nextEdges,
         };
 
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
-          selectedNodeIds: [simConceptId, naoConceptId],
-          selectedEdgeIds: [simRelId, naoRelId],
+          recomputeMetrics: true,
+          selectedNodeIds: createdIds,
+          selectedEdgeIds: createdRelIds,
         });
 
         return {
-          simConceptId,
-          naoConceptId,
-          simRelationId: simRelId,
-          naoRelationId: naoRelId,
+          simConceptId: createdIds[0],
+          naoConceptId: createdIds[1],
+          simRelationId: createdRelIds[0],
+          naoRelationId: createdRelIds[1],
         };
       },
 
@@ -1664,48 +1385,23 @@ export const useConceptMapStore = create<ConceptMapState>()(
           };
         }
 
-        // Recalcula portas inteligentes conforme a nova geometria dos nós movidos
-        const smartHandles = computeSmartEdgeHandles(
+        const nextEdges = updateIncidentSmartHandles(
           state.semantic,
           updatedNodes,
-          state.visual.layoutSettings.direction
+          state.visual.edges,
+          new Set(moves.map((m) => m.conceptId)),
+          state.visual.layoutSettings.direction,
+          Boolean(state.visual.layoutSettings.freeformCanvas)
         );
-
-        const isFreeform = Boolean(state.visual.layoutSettings.freeformCanvas);
-        const updatedEdges = { ...state.visual.edges };
-        for (const relId of state.semantic.relationOrder) {
-          const prevEdge = updatedEdges[relId];
-          const smart = smartHandles[relId];
-          if (prevEdge && smart) {
-            // PRESERVATION GUARANTEE: Never overwrite manual handles or freeform canvas edges
-            if (prevEdge.manualHandles || isFreeform) {
-              continue;
-            }
-            updatedEdges[relId] = {
-              ...prevEdge,
-              sourceHandle: smart.sourceHandle,
-              targetHandle: smart.targetHandle,
-            };
-          }
-        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
           nodes: updatedNodes,
-          edges: updatedEdges,
+          edges: nextEdges,
         };
 
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
         });
       },
 
@@ -1714,32 +1410,18 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const prev = state.visual.nodes[conceptId];
         if (!prev) return;
 
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: {
-            ...state.visual.nodes,
-            [conceptId]: {
-              ...prev,
-              dimensions: {
-                width: Math.max(100, Math.round(dimensions.width)),
-                height: Math.max(40, Math.round(dimensions.height)),
+        commitMutation(state, set, {
+          visual: {
+            ...state.visual,
+            nodes: {
+              ...state.visual.nodes,
+              [conceptId]: {
+                ...prev,
+                dimensions: { width: Math.max(100, Math.round(dimensions.width)), height: Math.max(40, Math.round(dimensions.height)) },
+                customSize: true,
               },
-              customSize: true,
             },
           },
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
         });
       },
 
@@ -1749,129 +1431,39 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const prev = state.visual.nodes[conceptId];
         if (!concept || !prev) return;
 
-        const autoDims = estimateConceptNodeDimensions(
-          concept.label,
-          undefined,
-          false,
-          concept.nodeShape ?? prev.nodeShape
-        );
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: {
-            ...state.visual.nodes,
-            [conceptId]: {
-              ...prev,
-              dimensions: autoDims,
-              customSize: false,
+        commitMutation(state, set, {
+          visual: {
+            ...state.visual,
+            nodes: {
+              ...state.visual.nodes,
+              [conceptId]: {
+                ...prev,
+                dimensions: estimateConceptNodeDimensions(concept.label, undefined, false, concept.nodeShape ?? prev.nodeShape),
+                customSize: false,
+              },
             },
           },
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
         });
       },
 
       toggleNodePin: (conceptId: ConceptId, pinned?: boolean) => {
-        const state = get();
-        const prev = state.visual.nodes[conceptId];
+        const prev = get().visual.nodes[conceptId];
         if (!prev) return;
-
-        const nextPinned = pinned !== undefined ? pinned : !prev.pinned;
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: {
-            ...state.visual.nodes,
-            [conceptId]: {
-              ...prev,
-              pinned: nextPinned,
-            },
-          },
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
-        });
+        get().setNodesPinned([conceptId], pinned !== undefined ? pinned : !prev.pinned);
       },
 
       setNodesPinned: (conceptIds: ConceptId[], pinned: boolean) => {
         if (conceptIds.length === 0) return;
         const state = get();
         const updatedNodes = { ...state.visual.nodes };
-
         for (const id of conceptIds) {
-          if (updatedNodes[id]) {
-            updatedNodes[id] = {
-              ...updatedNodes[id],
-              pinned,
-            };
-          }
+          if (updatedNodes[id]) updatedNodes[id] = { ...updatedNodes[id], pinned };
         }
-
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: updatedNodes,
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
-        });
+        commitMutation(state, set, { visual: { ...state.visual, nodes: updatedNodes } });
       },
 
       unpinAllNodes: () => {
-        const state = get();
-        const updatedNodes = { ...state.visual.nodes };
-        for (const id of Object.keys(updatedNodes)) {
-          updatedNodes[id] = {
-            ...updatedNodes[id],
-            pinned: false,
-          };
-        }
-
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: updatedNodes,
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
-        });
+        get().setNodesPinned(Object.keys(get().visual.nodes), false);
       },
 
       addRelation: (
@@ -1900,34 +1492,14 @@ export const useConceptMapStore = create<ConceptMapState>()(
         const actualType: RelationType =
           isFlowchart && type === 'hierarchical' ? 'sequence' : type;
 
-        const flowKind: FlowTransitionKind | undefined = isFlowchart
-          ? actualType === 'conditional'
-            ? 'conditional'
-            : actualType === 'loop-back'
-              ? 'loop-back'
-              : 'sequence'
-          : undefined;
-
-        const rawType =
-          actualType === 'sequence'
-            ? 'sequencial'
-            : actualType === 'conditional'
-              ? 'condicional'
-              : actualType === 'loop-back'
-                ? 'retorno'
-                : actualType === 'hierarchical'
-                  ? 'hierárquica'
-                  : 'ligação cruzada';
-
-        // Determine whether handles are manual
-        const isExplicitHandle =
-          Boolean(handles?.sourceHandle && handles.sourceHandle !== 'auto') ||
-          Boolean(handles?.targetHandle && handles.targetHandle !== 'auto');
-
-        const isManual =
-          handles?.manualHandles !== undefined
-            ? handles.manualHandles
-            : (isExplicitHandle || isFreeform);
+        const flowKind = getFlowKind(actualType, isFlowchart);
+        const rawType = getRelationRawType(actualType);
+        const { manualHandles: isManual } = resolveEdgeHandles(
+          undefined,
+          handles,
+          undefined,
+          isFreeform
+        );
 
         const nextSemantic: SemanticModel = {
           ...state.semantic,
@@ -1952,74 +1524,30 @@ export const useConceptMapStore = create<ConceptMapState>()(
           relationOrder: [...state.semantic.relationOrder, relationId],
         };
 
-        const smartHandles = computeSmartEdgeHandles(
+        const updatedEdges = createVisualEdgeRecord(
+          relationId,
+          sourceId,
           nextSemantic,
           state.visual.nodes,
-          state.visual.layoutSettings.direction
+          state.visual.edges,
+          state.visual.layoutSettings.direction,
+          isFlowchart,
+          actualType,
+          flowKind,
+          handles,
+          arrowDirection,
+          isFreeform
         );
-        const labelOffsets = computeEdgeLabelOffsets(nextSemantic);
-
-        const defaultCurve: EdgeCurveType = isFlowchart
-          ? 'smoothstep'
-          : (actualType === 'hierarchical' ? 'smoothstep' : 'bezier');
-
-        // Resolve source and target handles
-        const resolvedSourceHandle: HandlePosition =
-          handles?.sourceHandle && handles.sourceHandle !== 'auto'
-            ? handles.sourceHandle
-            : (smartHandles[relationId]?.sourceHandle ?? 'bottom');
-
-        const resolvedTargetHandle: HandlePosition =
-          handles?.targetHandle && handles.targetHandle !== 'auto'
-            ? handles.targetHandle
-            : (smartHandles[relationId]?.targetHandle ?? 'top');
-
-        const updatedEdges: Record<RelationId, VisualModel['edges'][string]> = {
-          ...state.visual.edges,
-          [relationId]: {
-            relationId,
-            curveType: defaultCurve,
-            sourceHandle: resolvedSourceHandle,
-            targetHandle: resolvedTargetHandle,
-            manualHandles: isManual,
-            arrowDirection,
-            labelOffset: labelOffsets[relationId] ?? { t: 0.5 },
-            flowKind,
-          },
-        };
-
-        for (const rId of nextSemantic.relationOrder) {
-          if (
-            nextSemantic.relations[rId]?.sourceId === sourceId &&
-            updatedEdges[rId] &&
-            labelOffsets[rId]
-          ) {
-            updatedEdges[rId] = {
-              ...updatedEdges[rId],
-              labelOffset: labelOffsets[rId],
-            };
-          }
-        }
 
         const nextVisual: VisualModel = {
           ...state.visual,
           edges: updatedEdges,
         };
 
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          recomputeMetrics: true,
           selectedNodeIds: [],
           selectedEdgeIds: [relationId],
         });
@@ -2065,43 +1593,16 @@ export const useConceptMapStore = create<ConceptMapState>()(
             ? updates.linkingPhrase.replace(/\r?\n/g, ' ')
             : existingRel.linkingPhrase;
 
-        const flowKind: FlowTransitionKind | undefined = isFlowchart
-          ? nextType === 'conditional'
-            ? 'conditional'
-            : nextType === 'loop-back'
-              ? 'loop-back'
-              : 'sequence'
-          : undefined;
+        const flowKind = getFlowKind(nextType, isFlowchart);
+        const rawType = getRelationRawType(nextType);
+        const nextArrowDirection: ArrowDirection =
+          updates.arrowDirection ??
+          existingEdge.arrowDirection ??
+          existingRel.arrowDirection ??
+          'forward';
 
-        const rawType =
-          nextType === 'sequence'
-            ? 'sequencial'
-            : nextType === 'conditional'
-              ? 'condicional'
-              : nextType === 'loop-back'
-                ? 'retorno'
-                : nextType === 'hierarchical'
-                  ? 'hierárquica'
-                  : 'ligação cruzada';
+        const { manualHandles } = resolveEdgeHandles(existingEdge, updates, undefined, isFreeform);
 
-        // 1. Resolve manualHandles status
-        let nextManual: boolean;
-        if (updates.manualHandles !== undefined) {
-          nextManual = updates.manualHandles;
-        } else if (updates.sourceHandle === 'auto' && updates.targetHandle === 'auto') {
-          nextManual = false;
-        } else if (
-          (updates.sourceHandle !== undefined && updates.sourceHandle !== 'auto') ||
-          (updates.targetHandle !== undefined && updates.targetHandle !== 'auto')
-        ) {
-          nextManual = true;
-        } else {
-          nextManual = existingEdge.manualHandles ?? isFreeform;
-        }
-
-        const preserveHandles = nextManual || isFreeform;
-
-        // Compute smart handles for fallback / auto-routing
         const nextSemantic: SemanticModel = {
           ...state.semantic,
           relations: {
@@ -2114,12 +1615,8 @@ export const useConceptMapStore = create<ConceptMapState>()(
               type: nextType,
               flowKind,
               rawType,
-              manualHandles: nextManual,
-              arrowDirection:
-                updates.arrowDirection ??
-                existingRel.arrowDirection ??
-                existingEdge.arrowDirection ??
-                'forward',
+              manualHandles,
+              arrowDirection: nextArrowDirection,
             },
           },
         };
@@ -2130,49 +1627,14 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.visual.layoutSettings.direction
         );
 
-        // 2. Resolve sourceHandle
-        let nextSourceHandle: HandlePosition;
-        if (updates.sourceHandle !== undefined) {
-          if (updates.sourceHandle === 'auto') {
-            nextSourceHandle = smartHandles[relationId]?.sourceHandle ?? 'bottom';
-          } else {
-            nextSourceHandle = updates.sourceHandle;
-          }
-        } else {
-          if (preserveHandles && existingEdge.sourceHandle && existingEdge.sourceHandle !== 'auto') {
-            nextSourceHandle = existingEdge.sourceHandle;
-          } else {
-            nextSourceHandle = smartHandles[relationId]?.sourceHandle ?? existingEdge.sourceHandle ?? 'bottom';
-          }
-        }
+        const { sourceHandle, targetHandle } = resolveEdgeHandles(
+          existingEdge,
+          updates,
+          smartHandles[relationId],
+          isFreeform
+        );
 
-        // 3. Resolve targetHandle
-        let nextTargetHandle: HandlePosition;
-        if (updates.targetHandle !== undefined) {
-          if (updates.targetHandle === 'auto') {
-            nextTargetHandle = smartHandles[relationId]?.targetHandle ?? 'top';
-          } else {
-            nextTargetHandle = updates.targetHandle;
-          }
-        } else {
-          if (preserveHandles && existingEdge.targetHandle && existingEdge.targetHandle !== 'auto') {
-            nextTargetHandle = existingEdge.targetHandle;
-          } else {
-            nextTargetHandle = smartHandles[relationId]?.targetHandle ?? existingEdge.targetHandle ?? 'top';
-          }
-        }
-
-        // 4. Resolve arrowDirection
-        const nextArrowDirection: ArrowDirection =
-          updates.arrowDirection ??
-          existingEdge.arrowDirection ??
-          existingRel.arrowDirection ??
-          'forward';
-
-        const defaultCurveForType: EdgeCurveType = isFlowchart
-          ? 'smoothstep'
-          : (nextType === 'hierarchical' ? 'smoothstep' : 'bezier');
-
+        const defaultCurveForType = getDefaultCurveType(isFlowchart, nextType);
         const nextCurveType =
           updates.curveType ??
           (updates.type ? defaultCurveForType : existingEdge.curveType);
@@ -2184,9 +1646,9 @@ export const useConceptMapStore = create<ConceptMapState>()(
             [relationId]: {
               ...existingEdge,
               curveType: nextCurveType,
-              sourceHandle: nextSourceHandle,
-              targetHandle: nextTargetHandle,
-              manualHandles: nextManual,
+              sourceHandle,
+              targetHandle,
+              manualHandles,
               arrowDirection: nextArrowDirection,
               labelOffset: updates.labelOffset
                 ? { ...existingEdge.labelOffset, ...updates.labelOffset }
@@ -2196,20 +1658,15 @@ export const useConceptMapStore = create<ConceptMapState>()(
           },
         };
 
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
+        const topologyChanged =
+          (updates.type !== undefined && updates.type !== existingRel.type) ||
+          (updates.sourceId !== undefined && updates.sourceId !== existingRel.sourceId) ||
+          (updates.targetId !== undefined && updates.targetId !== existingRel.targetId);
 
-        set({
+        commitMutation(state, set, {
           semantic: nextSemantic,
           visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+          recomputeMetrics: topologyChanged,
         });
       },
 
@@ -2220,16 +1677,11 @@ export const useConceptMapStore = create<ConceptMapState>()(
         if (!rel || !edge) return;
 
         const isManual = Boolean(edge.manualHandles || state.visual.layoutSettings.freeformCanvas);
-
         get().updateRelation(relationId, {
           sourceId: rel.targetId,
           targetId: rel.sourceId,
           ...(isManual
-            ? {
-                sourceHandle: edge.targetHandle,
-                targetHandle: edge.sourceHandle,
-                manualHandles: true,
-              }
+            ? { sourceHandle: edge.targetHandle, targetHandle: edge.sourceHandle, manualHandles: true }
             : {}),
         });
       },
@@ -2263,80 +1715,39 @@ export const useConceptMapStore = create<ConceptMapState>()(
         // Cascata: qualquer relação incidente a um conceito excluído também é removida
         for (const relId of state.semantic.relationOrder) {
           const rel = state.semantic.relations[relId];
-          if (
-            rel &&
-            (deletedConceptsSet.has(rel.sourceId) ||
-              deletedConceptsSet.has(rel.targetId))
-          ) {
+          if (rel && (deletedConceptsSet.has(rel.sourceId) || deletedConceptsSet.has(rel.targetId))) {
             deletedRelationsSet.add(relId);
           }
         }
 
         const nextConcepts = { ...state.semantic.concepts };
         const nextNodes = { ...state.visual.nodes };
-        for (const cId of deletedConceptsSet) {
+        deletedConceptsSet.forEach((cId) => {
           delete nextConcepts[cId];
           delete nextNodes[cId];
-        }
+        });
 
         const nextRelations = { ...state.semantic.relations };
         const nextEdges = { ...state.visual.edges };
-        for (const rId of deletedRelationsSet) {
+        deletedRelationsSet.forEach((rId) => {
           delete nextRelations[rId];
           delete nextEdges[rId];
-        }
+        });
 
-        const nextConceptOrder = state.semantic.conceptOrder.filter(
-          (id) => !deletedConceptsSet.has(id)
-        );
-        const nextRelationOrder = state.semantic.relationOrder.filter(
-          (id) => !deletedRelationsSet.has(id)
-        );
+        const nextConceptOrder = state.semantic.conceptOrder.filter((id) => !deletedConceptsSet.has(id));
+        const nextRelationOrder = state.semantic.relationOrder.filter((id) => !deletedRelationsSet.has(id));
 
         // Renumera orderIndex sequencialmente
         nextRelationOrder.forEach((id, idx) => {
-          if (nextRelations[id]) {
-            nextRelations[id] = {
-              ...nextRelations[id],
-              orderIndex: idx + 1,
-            };
-          }
+          if (nextRelations[id]) nextRelations[id] = { ...nextRelations[id], orderIndex: idx + 1 };
         });
 
-        const nextSemantic: SemanticModel = {
-          ...state.semantic,
-          concepts: nextConcepts,
-          conceptOrder: nextConceptOrder,
-          relations: nextRelations,
-          relationOrder: nextRelationOrder,
-        };
-
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: nextNodes,
-          edges: nextEdges,
-        };
-
-        const nextMetrics = computeSemanticGraphMetrics(nextSemantic);
-        const savedAt = persistDraftSnapshot(
-          nextSemantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          semantic: nextSemantic,
-          visual: nextVisual,
-          metrics: nextMetrics,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
-          selectedNodeIds: state.selectedNodeIds.filter(
-            (id) => !deletedConceptsSet.has(id)
-          ),
-          selectedEdgeIds: state.selectedEdgeIds.filter(
-            (id) => !deletedRelationsSet.has(id)
-          ),
+        commitMutation(state, set, {
+          semantic: { ...state.semantic, concepts: nextConcepts, conceptOrder: nextConceptOrder, relations: nextRelations, relationOrder: nextRelationOrder },
+          visual: { ...state.visual, nodes: nextNodes, edges: nextEdges },
+          recomputeMetrics: true,
+          selectedNodeIds: state.selectedNodeIds.filter((id) => !deletedConceptsSet.has(id)),
+          selectedEdgeIds: state.selectedEdgeIds.filter((id) => !deletedRelationsSet.has(id)),
         });
       },
 
@@ -2351,65 +1762,26 @@ export const useConceptMapStore = create<ConceptMapState>()(
           ? {
               ...state.visual,
               nodes: Object.fromEntries(
-                Object.entries(state.visual.nodes).map(([k, v]) => [
-                  k,
-                  { ...v, pinned: false },
-                ])
+                Object.entries(state.visual.nodes).map(([k, v]) => [k, { ...v, pinned: false }])
               ),
             }
           : state.visual;
 
-        const nextSettings: LayoutSettings = {
-          ...state.visual.layoutSettings,
-          ...overrideSettings,
-        };
+        const nextSettings: LayoutSettings = { ...state.visual.layoutSettings, ...overrideSettings };
+        const layoutResult = await computeConceptMapLayout(state.semantic, effectiveVisual, nextSettings);
 
-        const layoutResult = await computeConceptMapLayout(
-          state.semantic,
-          effectiveVisual,
-          nextSettings
-        );
-
-        const nextVisual: VisualModel = {
-          ...state.visual,
-          nodes: layoutResult.nodes,
-          edges: layoutResult.edges,
-          layoutSettings: nextSettings,
-        };
-
-        const savedAt = persistDraftSnapshot(
-          state.semantic,
-          nextVisual,
-          state.sourceFileName,
-          state.diagnostics
-        );
-
-        set({
-          visual: nextVisual,
-          hasUnsavedChanges: true,
-          lastSavedAt: savedAt,
+        commitMutation(state, set, {
+          visual: { ...state.visual, nodes: layoutResult.nodes, edges: layoutResult.edges, layoutSettings: nextSettings },
           isLayoutRunning: false,
         });
       },
 
       setCrossLinkVisibility: (mode: CrossLinkVisibilityMode) => {
-        const state = get();
-        set({
-          visual: {
-            ...state.visual,
-            crossLinkVisibility: mode,
-          },
-        });
+        set({ visual: { ...get().visual, crossLinkVisibility: mode } });
       },
 
       setViewport: (viewport: ViewportState) => {
-        const state = get();
-        set({
-          visual: {
-            ...state.visual,
-            viewport,
-          },
-        });
+        set({ visual: { ...get().visual, viewport } });
       },
 
       setSelection: (nodeIds: ConceptId[], edgeIds: RelationId[]) => {
@@ -2421,14 +1793,9 @@ export const useConceptMapStore = create<ConceptMapState>()(
           state.selectedEdgeIds.length === edgeIds.length &&
           state.selectedEdgeIds.every((id, idx) => id === edgeIds[idx]);
 
-        if (sameNodes && sameEdges) {
-          return;
+        if (!sameNodes || !sameEdges) {
+          set({ selectedNodeIds: nodeIds, selectedEdgeIds: edgeIds });
         }
-
-        set({
-          selectedNodeIds: nodeIds,
-          selectedEdgeIds: edgeIds,
-        });
       },
 
       setHoveredNodeId: (nodeId: ConceptId | null) => {

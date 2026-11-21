@@ -172,9 +172,13 @@ export interface SemanticGraphMetrics {
   loopBackCount?: number;
 }
 
+export type TreeLayoutStyle = 'vertical' | 'horizontal';
+
 export interface SemanticModel {
   /** Modo operacional do diagrama (padrão: 'concept-map') */
   diagramMode?: DiagramMode;
+  /** Estilo de empilhamento de subárvores/folhas ('vertical' empilha folhas em colunas; 'horizontal' espalha lado a lado) */
+  treeLayout?: TreeLayoutStyle;
   /** Título do mapa conceitual ou fluxograma */
   title: string;
   /** Dicionário de conceitos indexado por ConceptId */

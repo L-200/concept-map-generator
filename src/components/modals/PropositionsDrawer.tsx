@@ -1,10 +1,11 @@
 import { AlertTriangle, FileText, Plus, Shapes, Table, Trash2, X } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type {
   FlowchartNodeShape,
   RelationType,
 } from '../../domain/types';
 import { ALL_FLOWCHART_NODE_SHAPES } from '../../domain/types';
+import { classifyCondition } from '../../services/layout/geometry';
 import { serializeSemanticModelToMarkdown } from '../../services/parser/markdownSerializer';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
@@ -14,14 +15,25 @@ interface PropositionsDrawerProps {
 }
 
 const SHAPE_LABELS: Record<FlowchartNodeShape, string> = {
-  process: 'Processo [ ]',
-  decision: 'Decisão < >',
-  terminal: 'Início/Fim ( )',
-  io: 'Entrada/Saída [/ /]',
-  subroutine: 'Subprocesso [[ ]]',
-  document: 'Documento ~',
-  concept: 'Conceito',
+  process: 'Processo [ ]', decision: 'Decisão < >', terminal: 'Início/Fim ( )',
+  io: 'Entrada/Saída [/ /]', subroutine: 'Subprocesso [[ ]]', document: 'Documento ~', concept: 'Conceito',
 };
+
+function ShapeSelect({
+  value,
+  onChange,
+  className = 'rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none',
+  title,
+  prefix = '',
+}: { value: FlowchartNodeShape; onChange: (val: FlowchartNodeShape) => void; className?: string; title?: string; prefix?: string }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value as FlowchartNodeShape)} className={className} title={title}>
+      {ALL_FLOWCHART_NODE_SHAPES.map((sh) => (
+        <option key={sh} value={sh}>{prefix}{SHAPE_LABELS[sh]}</option>
+      ))}
+    </select>
+  );
+}
 
 type DrawerTab = 'table' | 'concepts' | 'markdown';
 
@@ -52,6 +64,21 @@ export function PropositionsDrawer({
   const [newType, setNewType] = useState<RelationType>('hierarchical');
   const [newTargetShape, setNewTargetShape] = useState<FlowchartNodeShape>('process');
 
+  const degreeMap = useMemo(() => {
+    const map = new Map<string, { inCount: number; outCount: number }>();
+    for (const rId of semantic.relationOrder) {
+      const r = semantic.relations[rId];
+      if (!r) continue;
+      const s = map.get(r.sourceId) ?? { inCount: 0, outCount: 0 };
+      s.outCount++;
+      map.set(r.sourceId, s);
+      const t = map.get(r.targetId) ?? { inCount: 0, outCount: 0 };
+      t.inCount++;
+      map.set(r.targetId, t);
+    }
+    return map;
+  }, [semantic.relationOrder, semantic.relations]);
+
   if (!isOpen) return null;
 
   const openMarkdownTab = () => {
@@ -73,10 +100,7 @@ export function PropositionsDrawer({
       : (newPhrase.trim() || 'relaciona-se com');
 
     const relType: RelationType = isFlowchart
-      ? phrase.toLowerCase() === 'sim' ||
-        phrase.toLowerCase() === 'não' ||
-        phrase.toLowerCase() === 'nao' ||
-        phrase.length > 0
+      ? classifyCondition(phrase) !== 'neutral' || phrase.length > 0
         ? 'conditional'
         : 'sequence'
       : newType;
@@ -116,42 +140,25 @@ export function PropositionsDrawer({
                 : 'Tabela de Proposições & Markdown Sincronizado'}
             </h2>
             <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setActiveTab('table')}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
-                  activeTab === 'table'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Table className="h-3.5 w-3.5" />
-                {isFlowchart ? 'Transições' : 'Tabela Interativa'} ({semantic.relationOrder.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('concepts')}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
-                  activeTab === 'concepts'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Shapes className="h-3.5 w-3.5" />
-                {isFlowchart ? 'Blocos' : 'Conceitos'} ({semantic.conceptOrder.length})
-              </button>
-              <button
-                type="button"
-                onClick={openMarkdownTab}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
-                  activeTab === 'markdown'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <FileText className="h-3.5 w-3.5" />
-                {isFlowchart ? 'Código Markdown (Fluxograma)' : 'Código Markdown (5 colunas)'}
-              </button>
+              {(
+                [
+                  { id: 'table', label: isFlowchart ? 'Transições' : 'Tabela Interativa', icon: Table, count: semantic.relationOrder.length },
+                  { id: 'concepts', label: isFlowchart ? 'Blocos' : 'Conceitos', icon: Shapes, count: semantic.conceptOrder.length },
+                  { id: 'markdown', label: isFlowchart ? 'Código Markdown (Fluxograma)' : 'Código Markdown (5 colunas)', icon: FileText, count: undefined },
+                ] as const
+              ).map(({ id, label, icon: Icon, count }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={id === 'markdown' ? openMarkdownTab : () => setActiveTab(id)}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
+                    activeTab === id ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label} {count !== undefined ? `(${count})` : ''}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -224,18 +231,12 @@ export function PropositionsDrawer({
                 className="min-w-[140px] flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none"
               />
               {isFlowchart ? (
-                <select
+                <ShapeSelect
                   value={newTargetShape}
-                  onChange={(e) => setNewTargetShape(e.target.value as FlowchartNodeShape)}
-                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none"
+                  onChange={setNewTargetShape}
                   title="Forma do nó de destino a adicionar"
-                >
-                  {ALL_FLOWCHART_NODE_SHAPES.map((sh) => (
-                    <option key={sh} value={sh}>
-                      Destino: {SHAPE_LABELS[sh]}
-                    </option>
-                  ))}
-                </select>
+                  prefix="Destino: "
+                />
               ) : (
                 <select
                   value={newType}
@@ -303,23 +304,12 @@ export function PropositionsDrawer({
                                 {src?.label}
                               </button>
                               {isFlowchart && (
-                                <select
+                                <ShapeSelect
                                   value={src?.nodeShape ?? 'process'}
-                                  onChange={(e) =>
-                                    updateNodeShape(
-                                      rel.sourceId,
-                                      e.target.value as FlowchartNodeShape
-                                    )
-                                  }
+                                  onChange={(sh) => updateNodeShape(rel.sourceId, sh)}
                                   className="text-[10px] rounded border border-slate-200 bg-slate-50 px-1 py-0.5 text-slate-600 w-fit"
                                   title="Forma do bloco de origem"
-                                >
-                                  {ALL_FLOWCHART_NODE_SHAPES.map((sh) => (
-                                    <option key={sh} value={sh}>
-                                      {SHAPE_LABELS[sh]}
-                                    </option>
-                                  ))}
-                                </select>
+                                />
                               )}
                             </div>
                           </td>
@@ -355,23 +345,12 @@ export function PropositionsDrawer({
                           <td className="px-2.5 py-1.5">
                             {isFlowchart ? (
                               <div className="flex flex-col gap-1">
-                                <select
+                                <ShapeSelect
                                   value={tgt?.nodeShape ?? 'process'}
-                                  onChange={(e) =>
-                                    updateNodeShape(
-                                      rel.targetId,
-                                      e.target.value as FlowchartNodeShape
-                                    )
-                                  }
+                                  onChange={(sh) => updateNodeShape(rel.targetId, sh)}
                                   className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 shadow-2xs hover:border-slate-300 focus:border-blue-500 focus:outline-none"
                                   title="Forma do nó de destino"
-                                >
-                                  {ALL_FLOWCHART_NODE_SHAPES.map((sh) => (
-                                    <option key={sh} value={sh}>
-                                      {SHAPE_LABELS[sh]}
-                                    </option>
-                                  ))}
-                                </select>
+                                />
                                 <select
                                   value={rel.type}
                                   onChange={(e) =>
@@ -448,12 +427,7 @@ export function PropositionsDrawer({
                   {semantic.conceptOrder.map((cId, idx) => {
                     const concept = semantic.concepts[cId];
                     if (!concept) return null;
-                    const outCount = semantic.relationOrder.filter(
-                      (rId) => semantic.relations[rId]?.sourceId === cId
-                    ).length;
-                    const inCount = semantic.relationOrder.filter(
-                      (rId) => semantic.relations[rId]?.targetId === cId
-                    ).length;
+                    const { inCount = 0, outCount = 0 } = degreeMap.get(cId) ?? {};
 
                     return (
                       <tr key={cId} className="hover:bg-slate-50">
@@ -471,19 +445,11 @@ export function PropositionsDrawer({
                           </button>
                         </td>
                         <td className="px-2.5 py-2">
-                          <select
+                          <ShapeSelect
                             value={concept.nodeShape ?? (isFlowchart ? 'process' : 'concept')}
-                            onChange={(e) =>
-                              updateNodeShape(cId, e.target.value as FlowchartNodeShape)
-                            }
+                            onChange={(sh) => updateNodeShape(cId, sh)}
                             className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 shadow-2xs focus:border-blue-500 focus:outline-none"
-                          >
-                            {ALL_FLOWCHART_NODE_SHAPES.map((sh) => (
-                              <option key={sh} value={sh}>
-                                {SHAPE_LABELS[sh]}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </td>
                         <td className="px-2.5 py-2 text-center font-mono text-slate-600">
                           {outCount}

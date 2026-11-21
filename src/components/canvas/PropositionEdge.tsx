@@ -9,7 +9,7 @@ import {
   type EdgeProps,
 } from '@xyflow/react';
 import { ArrowLeftRight, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type {
   ArrowDirection,
   DiagramMode,
@@ -19,6 +19,10 @@ import type {
   RelationId,
   RelationType,
 } from '../../domain/types';
+import {
+  classifyCondition,
+  computeParallelOffset,
+} from '../../services/layout/geometry';
 import { useConceptMapStore } from '../../store/useConceptMapStore';
 
 export interface PropositionEdgeData extends Record<string, unknown> {
@@ -41,60 +45,53 @@ export interface PropositionEdgeData extends Record<string, unknown> {
 }
 
 export type PropositionFlowEdge = Edge<PropositionEdgeData, 'proposition'>;
-
 export type FlowchartConditionType = 'positive' | 'negative' | 'neutral';
 
-/**
- * Classifica rótulos de condição de fluxograma para estilização semântica (Sim/Não, True/False, V/F).
- */
+const CARDINAL_FLOW_POSITIONS: Record<string, Position> = {
+  top: Position.Top,
+  right: Position.Right,
+  bottom: Position.Bottom,
+  left: Position.Left,
+};
+
 export function getFlowchartConditionType(phrase: string): FlowchartConditionType {
-  const norm = phrase.trim().toLowerCase();
-  if (
-    norm === 'sim' ||
-    norm === 'true' ||
-    norm === 'v' ||
-    norm === 's' ||
-    norm === 'yes' ||
-    norm === 'verdadeiro'
-  ) {
-    return 'positive';
-  }
-  if (
-    norm === 'não' ||
-    norm === 'nao' ||
-    norm === 'false' ||
-    norm === 'f' ||
-    norm === 'n' ||
-    norm === 'no' ||
-    norm === 'falso'
-  ) {
-    return 'negative';
-  }
-  return 'neutral';
+  const c = classifyCondition(phrase);
+  return c === 'affirmative' ? 'positive' : c === 'negative' ? 'negative' : 'neutral';
 }
 
-/**
- * Mapeia handleId cardinal ('top' | 'right' | 'bottom' | 'left') para Position enum do React Flow.
- */
 export function handleToPosition(
   handleId?: string | null,
   fallback: Position = Position.Top
 ): Position {
-  switch (handleId) {
-    case 'top':
-      return Position.Top;
-    case 'right':
-      return Position.Right;
-    case 'bottom':
-      return Position.Bottom;
-    case 'left':
-      return Position.Left;
-    default:
-      return fallback;
-  }
+  return (handleId ? CARDINAL_FLOW_POSITIONS[handleId] : undefined) ?? fallback;
 }
 
-export function PropositionEdge({
+const PILL_STYLES = {
+  positive_sel: 'border-emerald-600 bg-emerald-100 text-emerald-950 ring-2 ring-emerald-500 font-semibold',
+  positive_unsel: 'border-emerald-400 bg-emerald-50/95 text-emerald-800 font-semibold hover:border-emerald-500 hover:bg-emerald-100',
+  negative_sel: 'border-rose-600 bg-rose-100 text-rose-950 ring-2 ring-rose-500 font-semibold',
+  negative_unsel: 'border-rose-300 bg-rose-50/95 text-rose-800 font-semibold hover:border-rose-400 hover:bg-rose-100',
+  selected: 'border-blue-500 bg-blue-50 text-blue-950 ring-2 ring-blue-400 font-medium',
+  cross: 'border-amber-400/90 bg-amber-50/95 text-amber-950 font-medium',
+  flowchart_default: 'border-slate-300 bg-white/95 text-slate-800 font-medium hover:border-slate-400',
+  default: 'border-slate-300 bg-white/95 text-slate-800 font-medium',
+} as const;
+
+function getPillStyleClasses(
+  isFlowchart: boolean,
+  conditionType: FlowchartConditionType,
+  selected: boolean | undefined,
+  isCrossLink: boolean
+): string {
+  if (isFlowchart && conditionType !== 'neutral') {
+    return PILL_STYLES[`${conditionType}_${selected ? 'sel' : 'unsel'}` as const];
+  }
+  if (selected) return PILL_STYLES.selected;
+  if (isCrossLink) return PILL_STYLES.cross;
+  return isFlowchart ? PILL_STYLES.flowchart_default : PILL_STYLES.default;
+}
+
+function PropositionEdgeComponent({
   id,
   sourceX,
   sourceY,
@@ -193,58 +190,31 @@ export function PropositionEdge({
   );
 
   // Cálculo do caminho SVG e posição do rótulo
-  let edgePath = '';
-  let baseLabelX = (sourceX + targetX) / 2;
-  let baseLabelY = (sourceY + targetY) / 2;
-
   const isCrossLink = data.relationType === 'cross-link';
-  const parallelOffset =
-    data.parallelTotal > 1
-      ? (data.parallelIndex - (data.parallelTotal - 1) / 2) * 34
-      : 0;
+  const parallelOffset = computeParallelOffset(data.parallelIndex, data.parallelTotal);
 
-  if (data.curveType === 'straight' && parallelOffset === 0) {
-    const [path, lx, ly] = getStraightPath({
-      sourceX,
-      sourceY,
-      targetX,
-      targetY,
-    });
-    edgePath = path;
-    baseLabelX = lx;
-    baseLabelY = ly;
-  } else if (
-    data.curveType === 'smoothstep' &&
-    !isCrossLink &&
-    parallelOffset === 0
-  ) {
-    const [path, lx, ly] = getSmoothStepPath({
-      sourceX,
-      sourceY,
-      sourcePosition: effectiveSourcePosition,
-      targetX,
-      targetY,
-      targetPosition: effectiveTargetPosition,
-      borderRadius: 12,
-    });
-    edgePath = path;
-    baseLabelX = lx;
-    baseLabelY = ly;
-  } else {
-    const curvature = isCrossLink ? 0.38 : 0.25;
-    const [path, lx, ly] = getBezierPath({
-      sourceX,
-      sourceY,
-      sourcePosition: effectiveSourcePosition,
-      targetX,
-      targetY,
-      targetPosition: effectiveTargetPosition,
-      curvature,
-    });
-    edgePath = path;
-    baseLabelX = lx;
-    baseLabelY = ly;
-  }
+  const [edgePath, baseLabelX, baseLabelY] =
+    data.curveType === 'straight' && parallelOffset === 0
+      ? getStraightPath({ sourceX, sourceY, targetX, targetY })
+      : data.curveType === 'smoothstep' && !isCrossLink && parallelOffset === 0
+        ? getSmoothStepPath({
+            sourceX,
+            sourceY,
+            sourcePosition: effectiveSourcePosition,
+            targetX,
+            targetY,
+            targetPosition: effectiveTargetPosition,
+            borderRadius: 12,
+          })
+        : getBezierPath({
+            sourceX,
+            sourceY,
+            sourcePosition: effectiveSourcePosition,
+            targetX,
+            targetY,
+            targetPosition: effectiveTargetPosition,
+            curvature: isCrossLink ? 0.38 : 0.25,
+          });
 
   // Ajusta posição ao longo do vetor usando labelT (0.34 a 0.66)
   const t = data.labelT ?? 0.5;
@@ -278,31 +248,12 @@ export function PropositionEdge({
     !isFlowchart || !isLabelEmpty || isEditing || showAddLabelButton || selected;
 
   // Determina classes de estilo da pílula de rótulo
-  let pillStyleClasses = '';
-  if (isFlowchart) {
-    if (conditionType === 'positive') {
-      pillStyleClasses = selected
-        ? 'border-emerald-600 bg-emerald-100 text-emerald-950 ring-2 ring-emerald-500 font-semibold'
-        : 'border-emerald-400 bg-emerald-50/95 text-emerald-800 font-semibold hover:border-emerald-500 hover:bg-emerald-100';
-    } else if (conditionType === 'negative') {
-      pillStyleClasses = selected
-        ? 'border-rose-600 bg-rose-100 text-rose-950 ring-2 ring-rose-500 font-semibold'
-        : 'border-rose-300 bg-rose-50/95 text-rose-800 font-semibold hover:border-rose-400 hover:bg-rose-100';
-    } else {
-      pillStyleClasses = selected
-        ? 'border-blue-500 bg-blue-50 text-blue-950 ring-2 ring-blue-400 font-medium'
-        : isCrossLink
-          ? 'border-amber-400/90 bg-amber-50/95 text-amber-950 font-medium'
-          : 'border-slate-300 bg-white/95 text-slate-800 font-medium hover:border-slate-400';
-    }
-  } else {
-    // Modo Mapa Conceitual (estilo canônico preservado)
-    pillStyleClasses = selected
-      ? 'border-blue-500 bg-blue-50 text-blue-950 ring-2 ring-blue-400 font-medium'
-      : isCrossLink
-        ? 'border-amber-400/90 bg-amber-50/95 text-amber-950 font-medium'
-        : 'border-slate-300 bg-white/95 text-slate-800 font-medium';
-  }
+  const pillStyleClasses = getPillStyleClasses(
+    isFlowchart,
+    conditionType,
+    selected,
+    isCrossLink
+  );
 
   return (
     <>
@@ -483,3 +434,5 @@ export function PropositionEdge({
     </>
   );
 }
+
+export const PropositionEdge = memo(PropositionEdgeComponent);

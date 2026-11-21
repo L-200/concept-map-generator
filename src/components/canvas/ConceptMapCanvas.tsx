@@ -41,6 +41,7 @@ import type {
   RelationId,
 } from '../../domain/types';
 import { parseAndValidateJsonDocument } from '../../services/export/fileExporter';
+import { classifyCondition } from '../../services/layout/geometry';
 import {
   fetchDefaultWorkspaceInput,
   fetchFlowchartWorkspaceInput,
@@ -58,19 +59,103 @@ const edgeTypes = {
   proposition: PropositionEdge,
 };
 
-function sanitizeHandle(
-  handleId: string | null | undefined
-): HandlePosition | undefined {
-  if (
-    handleId === 'top' ||
-    handleId === 'right' ||
-    handleId === 'bottom' ||
-    handleId === 'left'
-  ) {
-    return handleId;
+const ARROW_MARKER_CACHE = new Map<
+  string,
+  { type: MarkerType; width: number; height: number; color: string }
+>();
+
+function getArrowMarker(color: string) {
+  let marker = ARROW_MARKER_CACHE.get(color);
+  if (!marker) {
+    marker = {
+      type: MarkerType.ArrowClosed,
+      width: 18,
+      height: 18,
+      color,
+    };
+    ARROW_MARKER_CACHE.set(color, marker);
   }
-  return undefined;
+  return marker;
 }
+
+const CARDINAL_SET = new Set(['top', 'right', 'bottom', 'left']);
+function sanitizeHandle(handleId: string | null | undefined): HandlePosition | undefined {
+  return handleId && CARDINAL_SET.has(handleId) ? (handleId as HandlePosition) : undefined;
+}
+
+interface PathwayCardDef {
+  key: string;
+  borderCls: string;
+  titleCls: string;
+  icon: React.ReactNode;
+  title: string;
+  badge: string;
+  badgeCls: string;
+  desc: string;
+  createTestId: string;
+  createLabel: string;
+  createBtnCls: string;
+  exampleTestId: string;
+  exampleLabel: string;
+  exampleBorderCls: string;
+  exampleIconColor: string;
+  blankBtn?: { testId: string; label: string };
+}
+
+const WELCOME_PATHWAYS: PathwayCardDef[] = [
+  {
+    key: 'concept-map',
+    borderCls: 'border-blue-100 bg-gradient-to-b from-blue-50/50 to-white',
+    titleCls: 'text-blue-900',
+    icon: <Network className="h-4 w-4 text-blue-600" />,
+    title: 'Mapa Conceitual',
+    badge: 'Novak',
+    badgeCls: 'bg-blue-100 text-blue-700',
+    desc: 'Estrutura hierárquica baseada em proposições explícitas (Conceito A → Frase de Ligação → Conceito B).',
+    createTestId: 'create-concept-map-btn',
+    createLabel: 'Iniciar Mapa Conceitual',
+    createBtnCls: 'bg-blue-600 hover:bg-blue-700',
+    exampleTestId: 'load-concept-map-example-btn',
+    exampleLabel: 'Carregar exemplo.md',
+    exampleBorderCls: 'border-blue-200 text-blue-800 hover:bg-blue-50',
+    exampleIconColor: 'text-blue-600',
+  },
+  {
+    key: 'flowchart',
+    borderCls: 'border-indigo-100 bg-gradient-to-b from-indigo-50/50 to-white',
+    titleCls: 'text-indigo-900',
+    icon: <Workflow className="h-4 w-4 text-indigo-600" />,
+    title: 'Fluxograma',
+    badge: 'Processos',
+    badgeCls: 'bg-indigo-100 text-indigo-700',
+    desc: 'Fluxos de trabalho com blocos de início/fim, tarefas, desvios condicionais (Sim/Não) e rotinas.',
+    createTestId: 'create-flowchart-btn',
+    createLabel: 'Iniciar Fluxograma',
+    createBtnCls: 'bg-indigo-600 hover:bg-indigo-700',
+    exampleTestId: 'load-flowchart-example-btn',
+    exampleLabel: 'Carregar exemplo-fluxograma.md',
+    exampleBorderCls: 'border-indigo-200 text-indigo-800 hover:bg-indigo-50',
+    exampleIconColor: 'text-indigo-600',
+  },
+  {
+    key: 'freeform',
+    borderCls: 'border-emerald-100 bg-gradient-to-b from-emerald-50/50 to-white',
+    titleCls: 'text-emerald-900',
+    icon: <Shapes className="h-4 w-4 text-emerald-600" />,
+    title: 'Canvas Livre',
+    badge: 'Freeform',
+    badgeCls: 'bg-emerald-100 text-emerald-700',
+    desc: 'Diagramação livre sem restrições heurísticas ou hierárquicas. Conecte qualquer ponto cardeal (topo, direita, base, esquerda) em qualquer formato.',
+    createTestId: 'create-freeform-btn',
+    createLabel: 'Iniciar Canvas Livre',
+    createBtnCls: 'bg-emerald-600 hover:bg-emerald-700',
+    exampleTestId: 'load-freeform-example-btn',
+    exampleLabel: 'Carregar exemplo-canvas-livre',
+    exampleBorderCls: 'border-emerald-200 text-emerald-800 hover:bg-emerald-50',
+    exampleIconColor: 'text-emerald-600',
+    blankBtn: { testId: 'load-freeform-blank-btn', label: 'Canvas em Branco' },
+  },
+];
 
 function miniMapNodeColor(node: Node): string {
   const data = node.data as ConceptFlowNode['data'] | undefined;
@@ -146,6 +231,20 @@ export function ConceptMapCanvas() {
     prevConceptCountRef.current = count;
   }, [semantic.conceptOrder.length, fitView]);
 
+  const handlePathwayAction = (key: string, action: 'create' | 'example' | 'blank') => {
+    if (key === 'concept-map') {
+      if (action === 'create') createNewEmptyMap(true, 'concept-map');
+      else fetchDefaultWorkspaceInput().then((p) => loadFromMarkdown(p.content, p.fileName));
+    } else if (key === 'flowchart') {
+      if (action === 'create') createNewEmptyMap(true, 'flowchart');
+      else fetchFlowchartWorkspaceInput().then((p) => loadFromMarkdown(p.content, p.fileName));
+    } else {
+      if (action === 'create') createNewEmptyMap(true, 'concept-map', { freeformCanvas: true });
+      else if (action === 'blank') createNewEmptyMap(false, 'concept-map', { freeformCanvas: true });
+      else fetchFreeformWorkspaceInput().then((p) => loadFromDocument(parseAndValidateJsonDocument(p.content)));
+    }
+  };
+
   // Calcula vizinhança de 1º grau do nó sob o cursor (hover)
   const activeFocusSet = useMemo(() => {
     const focusId = hoveredNodeId;
@@ -170,13 +269,17 @@ export function ConceptMapCanvas() {
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isFlowchart = semantic.diagramMode === 'flowchart';
 
-  // Constrói lista de nós para o React Flow
+  // Cache persistente de nós para isolamento O(1) a 60 FPS durante o arraste
+  const nodeCacheRef = useRef<Record<ConceptId, ConceptFlowNode>>({});
+
+  // Constrói lista de nós para o React Flow com reutilização de referência estável
   const flowNodes: ConceptFlowNode[] = useMemo(() => {
     const selectedSet = new Set(selectedNodeIds);
     const rootSet = new Set(metrics.rootConceptIds);
     const isCurrentFlowchart = semantic.diagramMode === 'flowchart';
+    const nextCache: Record<ConceptId, ConceptFlowNode> = {};
 
-    return semantic.conceptOrder
+    const nodes = semantic.conceptOrder
       .map((conceptId) => {
         const concept = semantic.concepts[conceptId];
         const nodeVis = visual.nodes[conceptId];
@@ -195,13 +298,46 @@ export function ConceptMapCanvas() {
             (normalizedQuery.length > 0 && !isSearchMatch)
         );
 
-        return {
+        const isSelected = selectedSet.has(conceptId);
+        const isRoot = rootSet.has(conceptId);
+        const nodeShape =
+          nodeVis.nodeShape ??
+          concept.nodeShape ??
+          (isCurrentFlowchart ? 'process' : 'concept');
+        const diagramMode = semantic.diagramMode ?? 'concept-map';
+
+        const cached = nodeCacheRef.current[conceptId];
+        if (
+          cached &&
+          cached.position.x === pos.x &&
+          cached.position.y === pos.y &&
+          cached.width === width &&
+          cached.height === height &&
+          cached.selected === isSelected &&
+          cached.data.label === concept.label &&
+          cached.data.pinned === nodeVis.pinned &&
+          cached.data.computedLayer === (nodeVis.computedLayer ?? 0) &&
+          cached.data.isRoot === isRoot &&
+          cached.data.isDimmed === isDimmed &&
+          cached.data.isSearchMatch === isSearchMatch &&
+          cached.data.customStyle === nodeVis.style &&
+          cached.data.nodeShape === nodeShape &&
+          cached.data.diagramMode === diagramMode
+        ) {
+          nextCache[conceptId] = cached;
+          return cached;
+        }
+
+        const newNode: ConceptFlowNode = {
           id: conceptId,
           type: 'concept' as const,
           position: pos,
           width,
           height,
-          selected: selectedSet.has(conceptId),
+          // Sem `measured`, o React Flow zera os handleBounds sempre que o objeto do nó
+          // é recriado (ex.: a cada frame de arraste) e as arestas deixam de ser renderizadas.
+          measured: { width, height },
+          selected: isSelected,
           style: {
             width,
             height,
@@ -211,20 +347,23 @@ export function ConceptMapCanvas() {
             label: concept.label,
             pinned: nodeVis.pinned,
             computedLayer: nodeVis.computedLayer ?? 0,
-            isRoot: rootSet.has(conceptId),
+            isRoot,
             degree: 0,
             isDimmed,
             isSearchMatch,
             customStyle: nodeVis.style,
-            nodeShape:
-              nodeVis.nodeShape ??
-              concept.nodeShape ??
-              (isCurrentFlowchart ? 'process' : 'concept'),
-            diagramMode: semantic.diagramMode ?? 'concept-map',
+            nodeShape,
+            diagramMode,
           },
         };
+
+        nextCache[conceptId] = newNode;
+        return newNode;
       })
       .filter((n): n is NonNullable<typeof n> => Boolean(n));
+
+    nodeCacheRef.current = nextCache;
+    return nodes;
   }, [
     semantic.conceptOrder,
     semantic.concepts,
@@ -237,12 +376,9 @@ export function ConceptMapCanvas() {
     normalizedQuery,
   ]);
 
-  // Constrói lista de arestas (proposições) para o React Flow
-  const flowEdges: PropositionFlowEdge[] = useMemo(() => {
-    const selectedSet = new Set(selectedEdgeIds);
-    const pairCounts: Record<string, RelationId[]> = {};
-    const isCurrentFlowchart = semantic.diagramMode === 'flowchart';
-
+  // Mapeamento topológico de arestas paralelas em passo único O(E)
+  const parallelEdgeIndexMap = useMemo(() => {
+    const pairGroups = new Map<string, RelationId[]>();
     for (const relId of semantic.relationOrder) {
       const rel = semantic.relations[relId];
       if (!rel) continue;
@@ -250,9 +386,28 @@ export function ConceptMapCanvas() {
         rel.sourceId < rel.targetId
           ? `${rel.sourceId}--${rel.targetId}`
           : `${rel.targetId}--${rel.sourceId}`;
-      if (!pairCounts[key]) pairCounts[key] = [];
-      pairCounts[key].push(relId);
+      let group = pairGroups.get(key);
+      if (!group) {
+        group = [];
+        pairGroups.set(key, group);
+      }
+      group.push(relId);
     }
+
+    const indexMap = new Map<RelationId, { index: number; total: number }>();
+    for (const siblings of pairGroups.values()) {
+      const total = siblings.length;
+      for (let i = 0; i < total; i++) {
+        indexMap.set(siblings[i], { index: i, total });
+      }
+    }
+    return indexMap;
+  }, [semantic.relationOrder, semantic.relations]);
+
+  // Constrói lista de arestas (proposições) para o React Flow
+  const flowEdges: PropositionFlowEdge[] = useMemo(() => {
+    const selectedSet = new Set(selectedEdgeIds);
+    const isCurrentFlowchart = semantic.diagramMode === 'flowchart';
 
     return semantic.relationOrder
       .map((relId) => {
@@ -260,13 +415,9 @@ export function ConceptMapCanvas() {
         const edgeVis = visual.edges[relId];
         if (!rel || !edgeVis) return null;
 
-        const pairKey =
-          rel.sourceId < rel.targetId
-            ? `${rel.sourceId}--${rel.targetId}`
-            : `${rel.targetId}--${rel.sourceId}`;
-        const siblings = pairCounts[pairKey] ?? [relId];
-        const parallelIndex = Math.max(0, siblings.indexOf(relId));
-        const parallelTotal = siblings.length;
+        const parallel = parallelEdgeIndexMap.get(relId) ?? { index: 0, total: 1 };
+        const parallelIndex = parallel.index;
+        const parallelTotal = parallel.total;
 
         const isCross = rel.type === 'cross-link';
         const visMode = visual.crossLinkVisibility;
@@ -293,21 +444,9 @@ export function ConceptMapCanvas() {
         }
 
         // Cor da ponta da seta adaptada a condições Sim / Não em fluxograma
-        const phraseNorm = rel.linkingPhrase.trim().toLowerCase();
-        const isSim =
-          isCurrentFlowchart &&
-          (phraseNorm === 'sim' ||
-            phraseNorm === 'true' ||
-            phraseNorm === 'v' ||
-            phraseNorm === 's' ||
-            phraseNorm === 'yes');
-        const isNao =
-          isCurrentFlowchart &&
-          (phraseNorm === 'não' ||
-            phraseNorm === 'nao' ||
-            phraseNorm === 'false' ||
-            phraseNorm === 'f' ||
-            phraseNorm === 'no');
+        const cond = isCurrentFlowchart ? classifyCondition(rel.linkingPhrase) : 'neutral';
+        const isSim = cond === 'affirmative';
+        const isNao = cond === 'negative';
 
         const arrowColor = isSelected
           ? '#2563eb'
@@ -322,12 +461,7 @@ export function ConceptMapCanvas() {
         const arrowDirection =
           edgeVis.arrowDirection ?? rel.arrowDirection ?? 'forward';
 
-        const markerConfig = {
-          type: MarkerType.ArrowClosed,
-          width: 18,
-          height: 18,
-          color: arrowColor,
-        };
+        const markerConfig = getArrowMarker(arrowColor);
 
         const markerEnd =
           arrowDirection === 'forward' || arrowDirection === 'both'
@@ -390,6 +524,7 @@ export function ConceptMapCanvas() {
     selectedEdgeIds,
     activeFocusSet,
     normalizedQuery,
+    parallelEdgeIndexMap,
   ]);
 
   // Atualiza posições locais durante arraste contínuo e seleção de nós
@@ -675,152 +810,59 @@ export function ConceptMapCanvas() {
 
             {/* Grade de Vias Triplas (Triple Pathways) */}
             <div className="mt-5 grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
-              {/* Via 1: Mapa Conceitual (Novak) */}
-              <div className="flex flex-col justify-between rounded-xl border border-blue-100 bg-gradient-to-b from-blue-50/50 to-white p-4 shadow-xs">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-900">
-                      <Network className="h-4 w-4 text-blue-600" />
-                      Mapa Conceitual
-                    </span>
-                    <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-                      Novak
-                    </span>
+              {WELCOME_PATHWAYS.map((pw) => (
+                <div
+                  key={pw.key}
+                  className={`flex flex-col justify-between rounded-xl border p-4 shadow-xs ${pw.borderCls}`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${pw.titleCls}`}>
+                        {pw.icon}
+                        {pw.title}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${pw.badgeCls}`}>
+                        {pw.badge}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
+                      {pw.desc}
+                    </p>
                   </div>
-                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
-                    Estrutura hierárquica baseada em proposições explícitas (Conceito A → Frase de Ligação → Conceito B).
-                  </p>
-                </div>
 
-                <div className="mt-4 flex flex-col gap-2">
-                  <button
-                    type="button"
-                    data-testid="create-concept-map-btn"
-                    onClick={() => createNewEmptyMap(true, 'concept-map')}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-blue-700"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Iniciar Mapa Conceitual
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="load-concept-map-example-btn"
-                    onClick={() => {
-                      fetchDefaultWorkspaceInput().then((p) => {
-                        loadFromMarkdown(p.content, p.fileName);
-                      });
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3.5 py-1.5 text-xs font-medium text-blue-800 transition hover:bg-blue-50"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5 text-blue-600" />
-                    Carregar exemplo.md
-                  </button>
-                </div>
-              </div>
-
-              {/* Via 2: Fluxograma de Processos */}
-              <div className="flex flex-col justify-between rounded-xl border border-indigo-100 bg-gradient-to-b from-indigo-50/50 to-white p-4 shadow-xs">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-900">
-                      <Workflow className="h-4 w-4 text-indigo-600" />
-                      Fluxograma
-                    </span>
-                    <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
-                      Processos
-                    </span>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <button
+                      type="button"
+                      data-testid={pw.createTestId}
+                      onClick={() => handlePathwayAction(pw.key, 'create')}
+                      className={`inline-flex w-full items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition ${pw.createBtnCls}`}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      {pw.createLabel}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={pw.exampleTestId}
+                      onClick={() => handlePathwayAction(pw.key, 'example')}
+                      className={`inline-flex w-full items-center justify-center gap-2 rounded-lg border bg-white px-3.5 py-1.5 text-xs font-medium transition ${pw.exampleBorderCls}`}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${pw.exampleIconColor}`} />
+                      {pw.exampleLabel}
+                    </button>
+                    {pw.blankBtn && (
+                      <button
+                        type="button"
+                        data-testid={pw.blankBtn.testId}
+                        onClick={() => handlePathwayAction(pw.key, 'blank')}
+                        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-50"
+                      >
+                        <Sparkles className="h-3 w-3 text-emerald-600" />
+                        {pw.blankBtn.label}
+                      </button>
+                    )}
                   </div>
-                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
-                    Fluxos de trabalho com blocos de início/fim, tarefas, desvios condicionais (Sim/Não) e rotinas.
-                  </p>
                 </div>
-
-                <div className="mt-4 flex flex-col gap-2">
-                  <button
-                    type="button"
-                    data-testid="create-flowchart-btn"
-                    onClick={() => createNewEmptyMap(true, 'flowchart')}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-700"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Iniciar Fluxograma
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="load-flowchart-example-btn"
-                    onClick={() => {
-                      fetchFlowchartWorkspaceInput().then((p) => {
-                        loadFromMarkdown(p.content, p.fileName);
-                      });
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-3.5 py-1.5 text-xs font-medium text-indigo-800 transition hover:bg-indigo-50"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5 text-indigo-600" />
-                    Carregar exemplo-fluxograma.md
-                  </button>
-                </div>
-              </div>
-
-              {/* Via 3: Canvas Livre (Freeform) */}
-              <div className="flex flex-col justify-between rounded-xl border border-emerald-100 bg-gradient-to-b from-emerald-50/50 to-white p-4 shadow-xs">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-900">
-                      <Shapes className="h-4 w-4 text-emerald-600" />
-                      Canvas Livre
-                    </span>
-                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                      Freeform
-                    </span>
-                  </div>
-                  <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-600">
-                    Diagramação livre sem restrições heurísticas ou hierárquicas. Conecte qualquer ponto cardeal (topo, direita, base, esquerda) em qualquer formato.
-                  </p>
-                </div>
-
-                <div className="mt-4 flex flex-col gap-2">
-                  <button
-                    type="button"
-                    data-testid="create-freeform-btn"
-                    onClick={() =>
-                      createNewEmptyMap(true, 'concept-map', {
-                        freeformCanvas: true,
-                      })
-                    }
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Iniciar Canvas Livre
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="load-freeform-example-btn"
-                    onClick={() => {
-                      fetchFreeformWorkspaceInput().then((p) => {
-                        const doc = parseAndValidateJsonDocument(p.content);
-                        loadFromDocument(doc);
-                      });
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3.5 py-1.5 text-xs font-medium text-emerald-800 transition hover:bg-emerald-50"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5 text-emerald-600" />
-                    Carregar exemplo-canvas-livre
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="load-freeform-blank-btn"
-                    onClick={() =>
-                      createNewEmptyMap(false, 'concept-map', {
-                        freeformCanvas: true,
-                      })
-                    }
-                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-emerald-700 transition hover:bg-emerald-50"
-                  >
-                    <Sparkles className="h-3 w-3 text-emerald-600" />
-                    Canvas em Branco
-                  </button>
-                </div>
-              </div>
+              ))}
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 w-full text-[11px] text-slate-400">
@@ -855,63 +897,32 @@ export function ConceptMapCanvas() {
         </div>
 
         <div className="flex flex-col gap-1.5">
-          {isFlowchart ? (
-            <>
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-0.5 w-6 bg-slate-600" />
-                  <span className="font-medium text-slate-700">Sequencial</span>
-                </div>
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-                  {metrics.sequenceCount ?? metrics.hierarchicalCount}
-                </span>
+          {[
+            {
+              label: isFlowchart ? 'Sequencial' : 'Hierárquica',
+              dashed: false,
+              color: 'bg-slate-600',
+              textCls: 'text-slate-700',
+              badgeCls: 'bg-slate-100 text-slate-700',
+              count: isFlowchart ? (metrics.sequenceCount ?? metrics.hierarchicalCount) : metrics.hierarchicalCount,
+            },
+            isFlowchart
+              ? { label: 'Condicional', dashed: false, color: 'bg-emerald-600', textCls: 'text-emerald-800', badgeCls: 'bg-emerald-100 text-emerald-900', count: metrics.conditionalCount ?? 0 }
+              : { label: 'Ligação Cruzada', dashed: true, color: 'border-amber-600', textCls: 'text-amber-800', badgeCls: 'bg-amber-100 text-amber-900', count: metrics.crossLinkCount },
+            ...(isFlowchart && (metrics.loopBackCount ?? 0) > 0
+              ? [{ label: 'Retorno', dashed: true, color: 'border-amber-600', textCls: 'text-amber-800', badgeCls: 'bg-amber-100 text-amber-900', count: metrics.loopBackCount }]
+              : []),
+          ].map((item) => (
+            <div key={item.label} className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className={`inline-block h-0.5 w-6 ${item.dashed ? 'border-b-2 border-dashed ' + item.color : item.color}`} />
+                <span className={`font-medium ${item.textCls}`}>{item.label}</span>
               </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-0.5 w-6 bg-emerald-600" />
-                  <span className="font-medium text-emerald-800">Condicional</span>
-                </div>
-                <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-mono text-[11px] text-emerald-900">
-                  {metrics.conditionalCount ?? 0}
-                </span>
-              </div>
-
-              {(metrics.loopBackCount ?? 0) > 0 && (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-block h-0.5 w-6 border-b-2 border-dashed border-amber-600" />
-                    <span className="font-medium text-amber-800">Retorno</span>
-                  </div>
-                  <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-900">
-                    {metrics.loopBackCount}
-                  </span>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-0.5 w-6 bg-slate-600" />
-                  <span className="font-medium text-slate-700">Hierárquica</span>
-                </div>
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
-                  {metrics.hierarchicalCount}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-0.5 w-6 border-b-2 border-dashed border-amber-600" />
-                  <span className="font-medium text-amber-800">Ligação Cruzada</span>
-                </div>
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] text-amber-900">
-                  {metrics.crossLinkCount}
-                </span>
-              </div>
-            </>
-          )}
+              <span className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${item.badgeCls}`}>
+                {item.count}
+              </span>
+            </div>
+          ))}
         </div>
 
         {/* Seletor de Visibilidade de Ligações Cruzadas */}

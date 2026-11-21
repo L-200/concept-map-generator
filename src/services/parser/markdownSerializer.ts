@@ -170,11 +170,14 @@ export function serializeSemanticModelToMarkdown(
   const includeFrontmatter = options.includeFrontmatter ?? isFlowchart;
   const rows: string[] = [];
 
-  if (includeFrontmatter) {
+  if (includeFrontmatter || semantic.treeLayout) {
     rows.push('---');
     rows.push(`type: ${mode}`);
     if (semantic.title && semantic.title !== 'Mapa Conceitual' && semantic.title !== 'Novo Fluxograma') {
       rows.push(`title: ${semantic.title}`);
+    }
+    if (semantic.treeLayout) {
+      rows.push(`treeLayout: ${semantic.treeLayout}`);
     }
     rows.push('---');
     rows.push('');

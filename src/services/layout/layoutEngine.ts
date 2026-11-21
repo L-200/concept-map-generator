@@ -11,9 +11,9 @@ import {
 } from 'd3-force';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type {
-  ArrowDirection,
   ConceptId,
   ConceptNodeVisual,
+  ConceptRelationSemantic,
   ConceptRelationVisual,
   Dimensions2D,
   EdgeCurveType,
@@ -29,6 +29,11 @@ import {
   estimateConceptNodeDimensions,
   estimateEdgeLabelDimensions,
 } from './nodeSizing';
+import {
+  isAffirmativeCondition,
+  isNegativeCondition,
+  isReturnCondition,
+} from './geometry';
 
 export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
   algorithm: 'novak-backbone',
@@ -45,60 +50,7 @@ export interface LayoutComputationResult {
   edges: Record<RelationId, ConceptRelationVisual>;
 }
 
-function normalizeConditionText(label: string): string {
-  return label
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-const AFFIRMATIVE_CONDITION_KEYS = new Set([
-  'sim',
-  'yes',
-  'true',
-  'verdadeiro',
-  's',
-  'y',
-  'v',
-  'positivo',
-  'ok',
-  'sucesso',
-  'aprovado',
-  'valido',
-]);
-
-const NEGATIVE_CONDITION_KEYS = new Set([
-  'nao',
-  'no',
-  'false',
-  'falso',
-  'n',
-  'f',
-  'negativo',
-  'rejeitado',
-  'reprovado',
-  'erro',
-  'falha',
-  'invalido',
-]);
-
-const RETURN_KEYWORD_REGEX =
-  /(retorno|voltar|repetir|loop|refazer|reenviar|reprocessar|retroagir|novamente)/i;
-
-function isAffirmativeCondition(linkingPhrase: string): boolean {
-  const norm = normalizeConditionText(linkingPhrase);
-  return AFFIRMATIVE_CONDITION_KEYS.has(norm);
-}
-
-function isNegativeCondition(linkingPhrase: string): boolean {
-  const norm = normalizeConditionText(linkingPhrase);
-  return NEGATIVE_CONDITION_KEYS.has(norm);
-}
-
-function isReturnCondition(linkingPhrase: string): boolean {
-  return RETURN_KEYWORD_REGEX.test(linkingPhrase.trim());
-}
+const elkInstance = new ELK();
 
 /**
  * Seleciona automaticamente as portas (handles) de origem e destino de cada conexão
@@ -160,127 +112,68 @@ export function computeSmartEdgeHandles(
       (isExplicitLoop || isGeometricReturn);
 
     // ------------------------------------------------------------------------
-    // RAMO 1: NÓ DE ORIGEM É DECISÃO (LOSANGO / DIAMOND)
-    // ------------------------------------------------------------------------
+    // Ramo 1: Retorno / Loop-back em fluxograma ou nó de decisão
+    const pair = (s: HandlePosition, t: HandlePosition) => ({ sourceHandle: s, targetHandle: t });
+    const fwd = direction === 'TB' ? pair('bottom', 'top') : pair('right', 'left');
+    const rev = direction === 'TB' ? pair('top', 'bottom') : pair('left', 'right');
+
+    if (isLoopBack) {
+      result[relId] = direction === 'TB'
+        ? pair(dx >= 0 ? 'right' : 'left', Math.abs(dx) > 60 ? 'top' : dx >= 0 ? 'right' : 'left')
+        : pair(dy >= 0 ? 'bottom' : 'top', Math.abs(dy) > 50 ? 'left' : dy >= 0 ? 'bottom' : 'top');
+      continue;
+    }
+
     if (srcShape === 'decision') {
       if (direction === 'TB') {
-        if (isLoopBack) {
-          // Retorno / loop a partir de decisão: sai pela lateral e entra por lateral/topo
-          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
-          const targetHandle: HandlePosition =
-            Math.abs(dx) > 60 ? 'top' : dx >= 0 ? 'right' : 'left';
-          result[relId] = { sourceHandle, targetHandle };
-        } else if (isNegativeCondition(rel.linkingPhrase)) {
-          // Ramo negativo ("Não", etc.): sai pela lateral
-          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
-          const targetHandle: HandlePosition =
-            dy > 30 ? 'top' : dx >= 0 ? 'left' : 'right';
-          result[relId] = { sourceHandle, targetHandle };
-        } else if (isAffirmativeCondition(rel.linkingPhrase)) {
-          // Ramo afirmativo ("Sim", etc.): sai pelo fundo
-          result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
-        } else {
-          // Condição arbitrária ou sem rótulo
-          if (Math.abs(dx) <= 30 && dy > 0) {
-            result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
-          } else {
-            const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
-            const targetHandle: HandlePosition =
-              dy > 30 ? 'top' : dx >= 0 ? 'left' : 'right';
-            result[relId] = { sourceHandle, targetHandle };
-          }
-        }
+        const isNeg = isNegativeCondition(rel.linkingPhrase);
+        const isAff = isAffirmativeCondition(rel.linkingPhrase);
+        result[relId] = (!isNeg && (isAff || (Math.abs(dx) <= 30 && dy > 0)))
+          ? fwd
+          : pair(dx >= 0 ? 'right' : 'left', dy > 30 ? 'top' : dx >= 0 ? 'left' : 'right');
       } else {
-        // Layout horizontal (LR) para decisão
-        if (isLoopBack) {
-          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
-          const targetHandle: HandlePosition =
-            Math.abs(dy) > 50 ? 'left' : dy >= 0 ? 'bottom' : 'top';
-          result[relId] = { sourceHandle, targetHandle };
-        } else if (isNegativeCondition(rel.linkingPhrase)) {
-          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
-          const targetHandle: HandlePosition =
-            dx > 30 ? 'left' : dy >= 0 ? 'top' : 'bottom';
-          result[relId] = { sourceHandle, targetHandle };
-        } else {
-          result[relId] = { sourceHandle: 'right', targetHandle: 'left' };
-        }
+        result[relId] = isNegativeCondition(rel.linkingPhrase)
+          ? pair(dy >= 0 ? 'bottom' : 'top', dx > 30 ? 'left' : dy >= 0 ? 'top' : 'bottom')
+          : fwd;
       }
       continue;
     }
 
-    // ------------------------------------------------------------------------
-    // RAMO 2: MODO FLUXOGRAMA (NÓS QUE NÃO SÃO DECISÃO)
-    // ------------------------------------------------------------------------
     if (isFlowchartDiagram) {
-      if (direction === 'TB') {
-        if (isLoopBack) {
-          const sourceHandle: HandlePosition = dx >= 0 ? 'right' : 'left';
-          const targetHandle: HandlePosition =
-            Math.abs(dx) > 60 ? 'top' : dx >= 0 ? 'right' : 'left';
-          result[relId] = { sourceHandle, targetHandle };
-        } else {
-          result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
-        }
-      } else {
-        if (isLoopBack) {
-          const sourceHandle: HandlePosition = dy >= 0 ? 'bottom' : 'top';
-          const targetHandle: HandlePosition =
-            Math.abs(dy) > 50 ? 'left' : dy >= 0 ? 'bottom' : 'top';
-          result[relId] = { sourceHandle, targetHandle };
-        } else {
-          result[relId] = { sourceHandle: 'right', targetHandle: 'left' };
-        }
-      }
+      // Se o nó filho está empilhado em coluna vertical de árvore HTA (treeLayout: vertical)
+      const isVerticalColumnChild =
+        semantic.treeLayout === 'vertical' &&
+        direction === 'TB' &&
+        dy > 15 &&
+        tgtNode.position.x >= srcCenter.x + 10 &&
+        tgtNode.position.x <= srcCenter.x + 60;
+      result[relId] = isVerticalColumnChild ? pair('bottom', 'left') : fwd;
       continue;
     }
 
-    // ------------------------------------------------------------------------
-    // RAMO 3: MAPA CONCEITUAL DE NOVAK (100% RETROCOMPATÍVEL)
-    // ------------------------------------------------------------------------
     if (rel.type === 'hierarchical') {
-      if (direction === 'TB') {
-        if (dy >= -20) {
-          result[relId] = { sourceHandle: 'bottom', targetHandle: 'top' };
-        } else {
-          result[relId] = { sourceHandle: 'top', targetHandle: 'bottom' };
-        }
-      } else {
-        if (dx >= -20) {
-          result[relId] = { sourceHandle: 'right', targetHandle: 'left' };
-        } else {
-          result[relId] = { sourceHandle: 'left', targetHandle: 'right' };
-        }
+      const isVerticalColumnChild =
+        semantic.treeLayout === 'vertical' &&
+        direction === 'TB' &&
+        dy > 15 &&
+        tgtNode.position.x >= srcCenter.x + 10 &&
+        tgtNode.position.x <= srcCenter.x + 60;
+      if (isVerticalColumnChild) {
+        result[relId] = pair('bottom', 'left');
+        continue;
       }
+      result[relId] = (direction === 'TB' ? dy >= -20 : dx >= -20) ? fwd : rev;
     } else {
-      // Ligação cruzada: prefere portas laterais quando há separação horizontal em layout TB
       if (direction === 'TB') {
-        if (Math.abs(dx) > 90) {
-          result[relId] =
-            dx > 0
-              ? { sourceHandle: 'right', targetHandle: 'left' }
-              : { sourceHandle: 'left', targetHandle: 'right' };
-        } else if (dy < -30) {
-          // Ligação cruzada ascendente na mesma coluna vertical: sai e entra pela direita em arco
-          result[relId] = { sourceHandle: 'right', targetHandle: 'right' };
-        } else {
-          result[relId] =
-            dy >= 0
-              ? { sourceHandle: 'bottom', targetHandle: 'top' }
-              : { sourceHandle: 'top', targetHandle: 'bottom' };
-        }
+        result[relId] = Math.abs(dx) > 90
+          ? (dx > 0 ? pair('right', 'left') : pair('left', 'right'))
+          : dy < -30
+            ? pair('right', 'right')
+            : dy >= 0 ? fwd : rev;
       } else {
-        if (Math.abs(dy) > 70) {
-          result[relId] =
-            dy > 0
-              ? { sourceHandle: 'bottom', targetHandle: 'top' }
-              : { sourceHandle: 'top', targetHandle: 'bottom' };
-        } else {
-          result[relId] =
-            dx >= 0
-              ? { sourceHandle: 'right', targetHandle: 'left' }
-              : { sourceHandle: 'left', targetHandle: 'right' };
-        }
+        result[relId] = Math.abs(dy) > 70
+          ? (dy > 0 ? pair('bottom', 'top') : pair('top', 'bottom'))
+          : dx >= 0 ? fwd : rev;
       }
     }
   }
@@ -297,32 +190,22 @@ export function computeEdgeLabelOffsets(
   semantic: SemanticModel
 ): Record<RelationId, { t: number; x: number; y: number }> {
   const offsets: Record<RelationId, { t: number; x: number; y: number }> = {};
-  const outgoingBySource: Record<ConceptId, RelationId[]> = {};
+  const outgoing: Record<ConceptId, RelationId[]> = {};
 
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
-    if (!rel) continue;
-    if (!outgoingBySource[rel.sourceId]) {
-      outgoingBySource[rel.sourceId] = [];
-    }
-    outgoingBySource[rel.sourceId].push(relId);
+    if (rel) (outgoing[rel.sourceId] ??= []).push(relId);
   }
 
-  for (const relIds of Object.values(outgoingBySource)) {
+  const candidates = [0.38, 0.62, 0.5, 0.32, 0.68, 0.44, 0.56];
+  for (const relIds of Object.values(outgoing)) {
     if (relIds.length === 1) {
       offsets[relIds[0]] = { t: 0.5, x: 0, y: 0 };
-      continue;
+    } else {
+      relIds.forEach((relId, idx) => {
+        offsets[relId] = { t: candidates[idx % candidates.length], x: 0, y: 0 };
+      });
     }
-
-    // Escalonamento vertical claro (ex: 0.38 e 0.62 quando há 2 filhos) para evitar colisão horizontal das pílulas
-    const candidates = [0.38, 0.62, 0.5, 0.32, 0.68, 0.44, 0.56];
-    relIds.forEach((relId, idx) => {
-      offsets[relId] = {
-        t: candidates[idx % candidates.length],
-        x: 0,
-        y: 0,
-      };
-    });
   }
 
   return offsets;
@@ -341,56 +224,56 @@ export function resolveNodeOverlaps(
   const ids = conceptOrder.filter((id) => Boolean(nodes[id]));
   if (ids.length <= 1) return;
 
+  const bounds = ids.map((id) => {
+    const node = nodes[id];
+    const w = (node.dimensions?.width ?? 180) + padding;
+    const h = (node.dimensions?.height ?? 52) + padding;
+    return {
+      node,
+      halfW: w / 2,
+      halfH: h / 2,
+      cx: node.position.x + (node.dimensions?.width ?? 180) / 2,
+      cy: node.position.y + (node.dimensions?.height ?? 52) / 2,
+      fixed: Boolean(respectPinned && node.pinned),
+    };
+  });
+
   const maxIterations = 25;
   for (let iter = 0; iter < maxIterations; iter++) {
     let moved = false;
 
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const nodeA = nodes[ids[i]];
-        const nodeB = nodes[ids[j]];
+    for (let i = 0; i < bounds.length; i++) {
+      const bA = bounds[i];
+      for (let j = i + 1; j < bounds.length; j++) {
+        const bB = bounds[j];
+        if (bA.fixed && bB.fixed) continue;
 
-        const wA = (nodeA.dimensions?.width ?? 180) + padding;
-        const hA = (nodeA.dimensions?.height ?? 52) + padding;
-        const wB = (nodeB.dimensions?.width ?? 180) + padding;
-        const hB = (nodeB.dimensions?.height ?? 52) + padding;
-
-        const cxA = nodeA.position.x + (nodeA.dimensions?.width ?? 180) / 2;
-        const cyA = nodeA.position.y + (nodeA.dimensions?.height ?? 52) / 2;
-        const cxB = nodeB.position.x + (nodeB.dimensions?.width ?? 180) / 2;
-        const cyB = nodeB.position.y + (nodeB.dimensions?.height ?? 52) / 2;
-
-        const overlapX = (wA + wB) / 2 - Math.abs(cxB - cxA);
-        const overlapY = (hA + hB) / 2 - Math.abs(cyB - cyA);
+        const overlapX = bA.halfW + bB.halfW - Math.abs(bB.cx - bA.cx);
+        const overlapY = bA.halfH + bB.halfH - Math.abs(bB.cy - bA.cy);
 
         if (overlapX > 0 && overlapY > 0) {
           moved = true;
-          const aFixed = respectPinned && nodeA.pinned;
-          const bFixed = respectPinned && nodeB.pinned;
-
-          if (aFixed && bFixed) continue;
 
           // Desloca no eixo de menor penetração (preferindo separar horizontalmente em camadas)
-          if (overlapX < overlapY * 1.4) {
-            const sign = cxB >= cxA ? 1 : -1;
-            if (aFixed) {
-              nodeB.position.x += sign * overlapX;
-            } else if (bFixed) {
-              nodeA.position.x -= sign * overlapX;
-            } else {
-              nodeA.position.x -= (sign * overlapX) / 2;
-              nodeB.position.x += (sign * overlapX) / 2;
-            }
+          const isX = overlapX < overlapY * 1.4;
+          const axis = isX ? 'x' : 'y';
+          const cAxis = isX ? 'cx' : 'cy';
+          const overlap = isX ? overlapX : overlapY;
+          const sign = bB[cAxis] >= bA[cAxis] ? 1 : -1;
+          const shift = sign * overlap;
+
+          if (bA.fixed) {
+            bB.node.position[axis] += shift;
+            bB[cAxis] += shift;
+          } else if (bB.fixed) {
+            bA.node.position[axis] -= shift;
+            bA[cAxis] -= shift;
           } else {
-            const sign = cyB >= cyA ? 1 : -1;
-            if (aFixed) {
-              nodeB.position.y += sign * overlapY;
-            } else if (bFixed) {
-              nodeA.position.y -= sign * overlapY;
-            } else {
-              nodeA.position.y -= (sign * overlapY) / 2;
-              nodeB.position.y += (sign * overlapY) / 2;
-            }
+            const halfShift = shift / 2;
+            bA.node.position[axis] -= halfShift;
+            bA[cAxis] -= halfShift;
+            bB.node.position[axis] += halfShift;
+            bB[cAxis] += halfShift;
           }
         }
       }
@@ -448,45 +331,187 @@ function packIsolatedNodes(
   });
 }
 
-/**
- * Motor 1 (Padrão): Layout Hierárquico de Duas Fases de Novak (Novak Backbone)
- * Fase 1: Calcula os níveis hierárquicos usando as relações `hierarchical` como espinha dorsal.
- * Fase 2: Roteia as relações `cross-link` pelas laterais sem deformar as camadas hierárquicas.
- */
-function runNovakBackboneLayout(
-  semantic: SemanticModel,
+function initDagreGraph(
+  settings: LayoutSettings,
+  conceptOrder: ConceptId[],
   dimsById: Record<ConceptId, Dimensions2D>,
-  depthById: Record<ConceptId, number>,
-  settings: LayoutSettings
-): Record<ConceptId, Point2D> {
+  edgesep = 30
+): dagre.graphlib.Graph {
   const g = new dagre.graphlib.Graph({ multigraph: true });
   g.setGraph({
     rankdir: settings.direction,
     nodesep: settings.nodeSpacingX,
     ranksep: settings.layerSpacing,
-    edgesep: 30,
+    edgesep,
     acyclicer: 'greedy',
     ranker: 'network-simplex',
     marginx: 60,
     marginy: 60,
   });
   g.setDefaultEdgeLabel(() => ({}));
-
-  for (const id of semantic.conceptOrder) {
+  for (const id of conceptOrder) {
     const dim = dimsById[id];
     g.setNode(id, { width: dim.width, height: dim.height });
   }
+  return g;
+}
 
-  const isBackboneEdge = (rel: (typeof semantic.relations)[string]) =>
-    rel.type === 'hierarchical' ||
-    (semantic.diagramMode === 'flowchart' &&
-      (rel.type === 'sequence' ||
-        (rel.type === 'conditional' && rel.flowKind !== 'loop-back')));
+function extractDagrePositions(
+  g: dagre.graphlib.Graph,
+  conceptOrder: ConceptId[],
+  dimsById: Record<ConceptId, Dimensions2D>,
+  fallback = 100
+): Record<ConceptId, Point2D> {
+  const positions: Record<ConceptId, Point2D> = {};
+  for (const id of conceptOrder) {
+    const n = g.node(id);
+    const dim = dimsById[id];
+    const nx = n && Number.isFinite(n.x) ? n.x : fallback;
+    const ny = n && Number.isFinite(n.y) ? n.y : fallback;
+    positions[id] = {
+      x: Math.round(nx - dim.width / 2),
+      y: Math.round(ny - dim.height / 2),
+    };
+  }
+  return positions;
+}
+
+const isForwardRelation = (rel: ConceptRelationSemantic, isFlowchart = true): boolean =>
+  rel.type === 'hierarchical' ||
+  (isFlowchart && (rel.type === 'sequence' || (rel.type === 'conditional' && rel.flowKind !== 'loop-back')));
+
+/**
+ * Motor 1 (Padrão): Layout Hierárquico de Duas Fases de Novak (Novak Backbone)
+ * Fase 1: Calcula os níveis hierárquicos usando as relações `hierarchical` como espinha dorsal.
+ * Fase 2: Roteia as relações `cross-link` pelas laterais sem deformar as camadas hierárquicas.
+ */
+/**
+ * Detecta se o grafo é uma árvore hierárquica larga (ex.: HTA com muitas folhas no nível >= 2)
+ * e organiza os filhos de cada subobjetivo de nível 1 em colunas verticais compactas,
+ * evitando diagramas excessivamente largos e ilegíveis em PDF.
+ */
+function tryCompactVerticalTreeLayout(
+  semantic: SemanticModel,
+  dimsById: Record<ConceptId, Dimensions2D>,
+  settings: LayoutSettings
+): Record<ConceptId, Point2D> | null {
+  if (settings.direction !== 'TB') return null;
+  if (semantic.treeLayout !== 'vertical') return null;
+
+  const isFlow = semantic.diagramMode === 'flowchart';
+  const childrenByParent: Record<ConceptId, ConceptId[]> = {};
+  const inDegree: Record<ConceptId, number> = {};
+
+  for (const id of semantic.conceptOrder) {
+    childrenByParent[id] = [];
+    inDegree[id] = 0;
+  }
+
+  for (const relId of semantic.relationOrder) {
+    const rel = semantic.relations[relId];
+    if (!rel) continue;
+    if (!isForwardRelation(rel, isFlow)) return null;
+    // Se um nó tiver mais de um pai, não é árvore pura
+    if (inDegree[rel.targetId] > 0) return null;
+    inDegree[rel.targetId]++;
+    childrenByParent[rel.sourceId].push(rel.targetId);
+  }
+
+  const roots = semantic.conceptOrder.filter((id) => inDegree[id] === 0);
+  if (roots.length !== 1) return null;
+
+  const rootId = roots[0];
+  const level1Ids = childrenByParent[rootId] ?? [];
+  if (level1Ids.length < 2) return null;
+
+  const positions: Record<ConceptId, Point2D> = {};
+  const colGap = 40;
+  const rowGap = 26;
+  const trunkIndent = 24;
+  const level1TopY = 60 + dimsById[rootId].height + 80;
+
+  let currentColX = 60;
+  const level1CentersX: number[] = [];
+
+  const layoutSubtreeColumn = (
+    parentId: ConceptId,
+    parentX: number,
+    parentBottomY: number
+  ): { maxRight: number; currentY: number } => {
+    const parentDim = dimsById[parentId];
+    const trunkX = Math.round(parentX + parentDim.width / 2);
+    const childX = trunkX + trunkIndent;
+    let curY = parentBottomY + 34;
+    let maxRight = parentX + parentDim.width;
+
+    for (const childId of childrenByParent[parentId] ?? []) {
+      const childDim = dimsById[childId];
+      positions[childId] = { x: childX, y: curY };
+      if (childX + childDim.width > maxRight) {
+        maxRight = childX + childDim.width;
+      }
+      curY += childDim.height;
+
+      const grandChildren = childrenByParent[childId] ?? [];
+      if (grandChildren.length > 0) {
+        const sub = layoutSubtreeColumn(childId, childX, curY);
+        if (sub.maxRight > maxRight) maxRight = sub.maxRight;
+        curY = sub.currentY;
+      }
+      curY += rowGap;
+    }
+
+    return { maxRight, currentY: curY - rowGap };
+  };
+
+  for (const l1Id of level1Ids) {
+    const l1Dim = dimsById[l1Id];
+    positions[l1Id] = { x: currentColX, y: level1TopY };
+    level1CentersX.push(currentColX + l1Dim.width / 2);
+
+    const children = childrenByParent[l1Id] ?? [];
+    if (children.length > 0) {
+      const sub = layoutSubtreeColumn(
+        l1Id,
+        currentColX,
+        level1TopY + l1Dim.height
+      );
+      currentColX = Math.round(sub.maxRight + colGap);
+    } else {
+      currentColX = Math.round(currentColX + l1Dim.width + colGap);
+    }
+  }
+
+  // Centraliza a raiz (Nó 0) sobre os subobjetivos de nível 1
+  const firstCenter = level1CentersX[0];
+  const lastCenter = level1CentersX[level1CentersX.length - 1];
+  const rootCenter = (firstCenter + lastCenter) / 2;
+  positions[rootId] = {
+    x: Math.round(rootCenter - dimsById[rootId].width / 2),
+    y: 60,
+  };
+
+  return positions;
+}
+
+function runNovakBackboneLayout(
+  semantic: SemanticModel,
+  dimsById: Record<ConceptId, Dimensions2D>,
+  depthById: Record<ConceptId, number>,
+  settings: LayoutSettings
+): Record<ConceptId, Point2D> {
+  const compactTree = tryCompactVerticalTreeLayout(semantic, dimsById, settings);
+  if (compactTree) {
+    return compactTree;
+  }
+
+  const g = initDagreGraph(settings, semantic.conceptOrder, dimsById, 30);
+  const isFlow = semantic.diagramMode === 'flowchart';
 
   const nodesWithHierarchicalEdge = new Set<ConceptId>();
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
-    if (rel && isBackboneEdge(rel)) {
+    if (rel && isForwardRelation(rel, isFlow)) {
       nodesWithHierarchicalEdge.add(rel.sourceId);
       nodesWithHierarchicalEdge.add(rel.targetId);
       const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
@@ -523,22 +548,7 @@ function runNovakBackboneLayout(
   }
 
   dagre.layout(g);
-
-  const positions: Record<ConceptId, Point2D> = {};
-  for (const id of semantic.conceptOrder) {
-    const n = g.node(id);
-    const dim = dimsById[id];
-    if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
-      positions[id] = {
-        x: Math.round(n.x - dim.width / 2),
-        y: Math.round(n.y - dim.height / 2),
-      };
-    } else {
-      positions[id] = { x: 100, y: 100 };
-    }
-  }
-
-  return positions;
+  return extractDagrePositions(g, semantic.conceptOrder, dimsById, 100);
 }
 
 /**
@@ -549,7 +559,12 @@ async function runElkLayeredLayout(
   dimsById: Record<ConceptId, Dimensions2D>,
   settings: LayoutSettings
 ): Promise<Record<ConceptId, Point2D>> {
-  const elk = new ELK();
+  const compactTree = tryCompactVerticalTreeLayout(semantic, dimsById, settings);
+  if (compactTree) {
+    return compactTree;
+  }
+
+  const elk = elkInstance;
 
   const elkNodes = semantic.conceptOrder.map((id) => ({
     id,
@@ -562,10 +577,7 @@ async function runElkLayeredLayout(
     .filter((rel): rel is NonNullable<typeof rel> => Boolean(rel))
     .map((rel) => {
       const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
-      const isForward =
-        rel.type === 'hierarchical' ||
-        rel.type === 'sequence' ||
-        (rel.type === 'conditional' && rel.flowKind !== 'loop-back');
+      const isForward = isForwardRelation(rel, true);
       return {
         id: rel.id,
         sources: [rel.sourceId],
@@ -622,31 +634,17 @@ function runDagreFullLayout(
   dimsById: Record<ConceptId, Dimensions2D>,
   settings: LayoutSettings
 ): Record<ConceptId, Point2D> {
-  const g = new dagre.graphlib.Graph({ multigraph: true });
-  g.setGraph({
-    rankdir: settings.direction,
-    nodesep: settings.nodeSpacingX,
-    ranksep: settings.layerSpacing,
-    edgesep: 25,
-    acyclicer: 'greedy',
-    ranker: 'network-simplex',
-    marginx: 60,
-    marginy: 60,
-  });
-  g.setDefaultEdgeLabel(() => ({}));
-
-  for (const id of semantic.conceptOrder) {
-    const dim = dimsById[id];
-    g.setNode(id, { width: dim.width, height: dim.height });
+  const compactTree = tryCompactVerticalTreeLayout(semantic, dimsById, settings);
+  if (compactTree) {
+    return compactTree;
   }
+
+  const g = initDagreGraph(settings, semantic.conceptOrder, dimsById, 25);
 
   for (const relId of semantic.relationOrder) {
     const rel = semantic.relations[relId];
     if (!rel) continue;
-    const isForward =
-      rel.type === 'hierarchical' ||
-      rel.type === 'sequence' ||
-      (rel.type === 'conditional' && rel.flowKind !== 'loop-back');
+    const isForward = isForwardRelation(rel, true);
     const labelDim = estimateEdgeLabelDimensions(rel.linkingPhrase);
     g.setEdge(
       rel.sourceId,
@@ -662,18 +660,7 @@ function runDagreFullLayout(
   }
 
   dagre.layout(g);
-
-  const positions: Record<ConceptId, Point2D> = {};
-  for (const id of semantic.conceptOrder) {
-    const n = g.node(id);
-    const dim = dimsById[id];
-    positions[id] = {
-      x: Math.round((n?.x ?? 150) - dim.width / 2),
-      y: Math.round((n?.y ?? 150) - dim.height / 2),
-    };
-  }
-
-  return positions;
+  return extractDagrePositions(g, semantic.conceptOrder, dimsById, 150);
 }
 
 /**
@@ -935,40 +922,25 @@ export async function computeConceptMapLayout(
     const isManual = Boolean(prevEdge?.manualHandles || rel.manualHandles || isFreeform);
 
     const sourceHandle: HandlePosition =
-      isManual && prevEdge?.sourceHandle && prevEdge.sourceHandle !== 'auto'
+      (isManual && prevEdge?.sourceHandle && prevEdge.sourceHandle !== 'auto')
         ? prevEdge.sourceHandle
         : handles.sourceHandle;
-
     const targetHandle: HandlePosition =
-      isManual && prevEdge?.targetHandle && prevEdge.targetHandle !== 'auto'
+      (isManual && prevEdge?.targetHandle && prevEdge.targetHandle !== 'auto')
         ? prevEdge.targetHandle
         : handles.targetHandle;
-
-    const manualHandles =
-      prevEdge?.manualHandles ?? rel.manualHandles ?? (isFreeform ? true : undefined);
-
-    const arrowDirection: ArrowDirection =
-      prevEdge?.arrowDirection ?? rel.arrowDirection ?? 'forward';
-
-    const hasCustomOffset =
-      prevEdge?.labelOffset?.t !== undefined && prevEdge.labelOffset.t !== 0.5;
-
     const defaultCurve: EdgeCurveType =
-      semantic.diagramMode === 'flowchart'
-        ? 'smoothstep'
-        : rel.type === 'hierarchical'
-          ? 'smoothstep'
-          : 'bezier';
+      semantic.diagramMode === 'flowchart' || rel.type === 'hierarchical' ? 'smoothstep' : 'bezier';
 
     nextEdges[relId] = {
       relationId: relId,
       curveType: prevEdge?.curveType ?? defaultCurve,
       sourceHandle,
       targetHandle,
-      manualHandles,
-      arrowDirection,
-      labelOffset: hasCustomOffset
-        ? prevEdge!.labelOffset
+      manualHandles: prevEdge?.manualHandles ?? rel.manualHandles ?? (isFreeform ? true : undefined),
+      arrowDirection: prevEdge?.arrowDirection ?? rel.arrowDirection ?? 'forward',
+      labelOffset: (prevEdge?.labelOffset?.t !== undefined && prevEdge.labelOffset.t !== 0.5)
+        ? prevEdge.labelOffset
         : labelOffsets[relId] ?? { t: 0.5 },
       style: prevEdge?.style,
       flowKind: rel.flowKind ?? prevEdge?.flowKind,
